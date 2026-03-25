@@ -347,7 +347,7 @@ void handleCommand(const char *cmd) {
         if (!useFallback)
             bleSendLine(("Frame:  " + String(currentFrameIdx+1) + "/" + String(totalFrames)).c_str());
         bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
-        bleSendLine("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (" + String(TOTAL_LEDS) + " LEDs)");
+        bleSendLine(("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (" + String(TOTAL_LEDS) + " LEDs)").c_str());
         bleSendLine("─────────────────────────────────");
     }
     else if (s == "reload") {
