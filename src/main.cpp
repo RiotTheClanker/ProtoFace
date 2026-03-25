@@ -232,6 +232,11 @@ void handleCommand(const char *cmd) {
         if (!openFile(idx)) { bleSendLine("ERROR: could not open file"); return; }
         fileIndex = idx; currentFrameIdx = 0;
         countFrames(); readNextFrame();
+        if (!frameLoaded) {
+            useFallback = true;
+            bleSendLine("ERROR: failed to read first frame — using fallback");
+            return;
+        }
         lastFrameTime = millis();
         String msg = "Loaded: " + String(fileList[idx])
                    + "  (" + String(totalFrames) + " frames)";
@@ -248,14 +253,22 @@ void handleCommand(const char *cmd) {
     else if (s == "next") {
         if (useFallback) { bleSendLine("Fallback has one frame"); return; }
         currentFrameIdx = (currentFrameIdx + 1) % totalFrames;
-        seekFrame(currentFrameIdx);
+        if (!seekFrame(currentFrameIdx)) {
+            bleSendLine("ERROR: failed to seek frame — switching to fallback");
+            useFallback = true;
+            return;
+        }
         lastFrameTime = millis();
         bleSendLine(("Frame " + String(currentFrameIdx+1) + "/" + String(totalFrames)).c_str());
     }
     else if (s == "prev") {
         if (useFallback) { bleSendLine("Fallback has one frame"); return; }
         currentFrameIdx = (currentFrameIdx - 1 + totalFrames) % totalFrames;
-        seekFrame(currentFrameIdx);
+        if (!seekFrame(currentFrameIdx)) {
+            bleSendLine("ERROR: failed to seek frame — switching to fallback");
+            useFallback = true;
+            return;
+        }
         lastFrameTime = millis();
         bleSendLine(("Frame " + String(currentFrameIdx+1) + "/" + String(totalFrames)).c_str());
     }
@@ -343,12 +356,28 @@ void setup() {
         Serial.println("SD mounted");
         scanSDFiles();
         Serial.print(fileCount); Serial.println(" .anim files found");
-        if (fileCount > 0 && openFile(0)) {
+        int startIndex = -1;
+        for (int i = 0; i < fileCount; i++) {
+            if (strcmp(fileList[i], "start.anim") == 0) {
+                startIndex = i;
+                break;
+            }
+        }
+        if (startIndex != -1 && openFile(startIndex)) {
+            fileIndex = startIndex;
             currentFrameIdx = 0;
             countFrames();
             readNextFrame();
-            lastFrameTime = millis();
-            Serial.print("Auto-loaded: "); Serial.println(fileList[0]);
+            if (!frameLoaded) {
+                useFallback = true;
+                Serial.println("Failed to read first frame — using fallback");
+            } else {
+                lastFrameTime = millis();
+                Serial.print("Auto-loaded: "); Serial.println(fileList[startIndex]);
+                useFallback = false;
+            }
+        } else {
+            Serial.println("start.anim not found — using fallback");
         }
     } else {
         Serial.println("SD not found — fallback only");
@@ -396,9 +425,13 @@ void loop() {
                 currentFrameIdx++;
                 if (currentFrameIdx >= totalFrames) {
                     currentFrameIdx = 0;
-                    rewindFile();
+                    if (!rewindFile()) {
+                        useFallback = true;
+                    }
                 } else {
-                    readNextFrame();
+                    if (!readNextFrame()) {
+                        useFallback = true;
+                    }
                 }
             }
         }
