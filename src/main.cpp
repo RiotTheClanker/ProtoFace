@@ -27,7 +27,7 @@ extern "C" {
 //  The fallback_anim.h must be generated for the same layout.
 //
 #ifndef PROTOGEN_LAYOUT
-#  define PROTOGEN_LAYOUT 11   // ← change to 11 for the new 11-panel build
+#  define PROTOGEN_LAYOUT 14   // ← change to 11 for the new 11-panel build
 #endif
 
 #if PROTOGEN_LAYOUT == 14
