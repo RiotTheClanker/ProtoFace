@@ -27,7 +27,9 @@ jobs:
       - name: Install PlatformIO Core
         run: pip install platformio
       - name: Build firmware (Layout ${{ matrix.layout }})
-        run: pio run -D PROTOGEN_LAYOUT=${{ matrix.layout }}
+        env:
+          PLATFORMIO_BUILD_FLAGS: -DPROTOGEN_LAYOUT=${{ matrix.layout }}
+        run: pio run
       - name: Upload firmware (Layout ${{ matrix.layout }})
         uses: actions/upload-artifact@v4
         with:
