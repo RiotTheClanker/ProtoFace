@@ -7,6 +7,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+.vscode/extensions.json
 
 # ── Compiled firmware ─────────────────────────────────────────────────────────
 # Binaries are produced by CI and attached as release assets instead
