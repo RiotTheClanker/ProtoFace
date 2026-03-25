@@ -213,9 +213,6 @@ void countFrames() {
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 void handleCommand(const char *cmd) {
-#if DEBUG_BLE
-    Serial.println("Handling command");
-#endif
     String s = String(cmd);
     s.trim();
     s.toLowerCase();
@@ -316,10 +313,6 @@ int bleWriteCallback(uint16_t characteristic_id, uint8_t *buf, uint16_t len) {
     if (characteristic_id == rx_value_handle) {
         char cmd[64] = {0};
         memcpy(cmd, buf, min((int)len, 63));
-#if DEBUG_BLE
-        Serial.print("BLE received (len="); Serial.print(len); Serial.print("): '");
-        Serial.print(cmd); Serial.println("'");
-#endif
         handleCommand(cmd);
     }
     return 0;
@@ -336,6 +329,8 @@ void bleConnected(BLEStatus status, BLEDevice *device) {
     if (status == BLE_STATUS_OK) {
         conn_handle = device->getHandle();
         Serial.println("BLE connected");
+        ble_subscribed = true;  // Force subscribed for apps that don't enable notifications
+        bleSendLine("Protogen connected. Type 'help'.");
     }
 }
 
