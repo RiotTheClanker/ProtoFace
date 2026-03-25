@@ -11,6 +11,9 @@ extern "C" {
 
 #include "fallback_anim.h"
 
+// ── Debug ─────────────────────────────────────────────────────────────────────
+#define DEBUG_BLE 0
+
 // ── Pins ──────────────────────────────────────────────────────────────────────
 #define LED_PIN_LEFT   2
 #define LED_PIN_RIGHT  3
@@ -64,6 +67,7 @@ bool      useFallback = false;
 // ── BLE state ─────────────────────────────────────────────────────────────────
 static hci_con_handle_t conn_handle     = HCI_CON_HANDLE_INVALID;
 static uint16_t         tx_value_handle = 0;
+static uint16_t         rx_value_handle = 0;
 static bool             ble_subscribed  = false;
 
 // ── BLE helpers ───────────────────────────────────────────────────────────────
@@ -209,6 +213,9 @@ void countFrames() {
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 void handleCommand(const char *cmd) {
+#if DEBUG_BLE
+    Serial.println("Handling command");
+#endif
     String s = String(cmd);
     s.trim();
     s.toLowerCase();
@@ -306,9 +313,13 @@ void handleCommand(const char *cmd) {
 
 // ── BLE callbacks ─────────────────────────────────────────────────────────────
 int bleWriteCallback(uint16_t characteristic_id, uint8_t *buf, uint16_t len) {
-    if (characteristic_id == NUS_RX_CHAR_ID) {
+    if (characteristic_id == rx_value_handle) {
         char cmd[64] = {0};
         memcpy(cmd, buf, min((int)len, 63));
+#if DEBUG_BLE
+        Serial.print("BLE received (len="); Serial.print(len); Serial.print("): '");
+        Serial.print(cmd); Serial.println("'");
+#endif
         handleCommand(cmd);
     }
     return 0;
@@ -389,7 +400,7 @@ void setup() {
     BTstack.setGATTCharacteristicNotificationCallback(bleNotifyCallback);
 
     BTstack.addGATTService(new UUID(NUS_SERVICE_UUID));
-    BTstack.addGATTCharacteristicDynamic(
+    rx_value_handle = BTstack.addGATTCharacteristicDynamic(
         new UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
         ATT_PROPERTY_WRITE | ATT_PROPERTY_WRITE_WITHOUT_RESPONSE,
         NUS_RX_CHAR_ID);
