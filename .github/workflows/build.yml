@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        layout: [14, 11]
 
     steps:
       - name: Checkout repository
@@ -30,13 +33,13 @@ jobs:
       - name: Install PlatformIO Core
         run: pip install platformio
 
-      - name: Build firmware
-        run: pio run
+      - name: Build firmware (Layout ${{ matrix.layout }})
+        run: pio run -D PROTOGEN_LAYOUT=${{ matrix.layout }}
 
-      - name: Upload firmware (.uf2)
+      - name: Upload firmware (Layout ${{ matrix.layout }})
         uses: actions/upload-artifact@v4
         with:
-          name: ProtoFace-firmware-${{ github.sha }}
+          name: ProtoFace-firmware-layout-${{ matrix.layout }}-${{ github.sha }}
           path: |
             .pio/build/rpipico2w/firmware.uf2
             .pio/build/rpipico2w/firmware.elf
