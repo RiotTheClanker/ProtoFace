@@ -12,7 +12,7 @@ reacts to a microphone, and is controlled wirelessly via **Bluetooth LE (NUS/UAR
 
 | Feature | Details |
 |---|---|
-| 🌈 **Dual LED chains** | 448 LEDs × 2 strips (GP2 left, GP3 right) via Adafruit NeoPixel |
+| 🌈 **Dual LED chains** | 2 strips (GP2 left, GP3 right) via Adafruit NeoPixel |
 | 💾 **SD card animations** | Plays `.anim` files from SD — hot-swappable at runtime |
 | 🎤 **Sound reactivity** | Three modes per LED: Static, Snap (threshold), Linear (volume-scaled) |
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |
