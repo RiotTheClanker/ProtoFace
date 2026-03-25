@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        layout: [14, 11]
+        layout: [11]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
