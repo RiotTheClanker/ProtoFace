@@ -11,6 +11,56 @@ extern "C" {
 
 #include "fallback_anim.h"
 
+// ── Layout selection ──────────────────────────────────────────────────────────
+//
+//  Define exactly ONE of these before building (or pass via -D flag):
+//
+//    PROTOGEN_LAYOUT 14  →  Original: 7 panels per side (7+7 = 14 total)
+//                           Left  chain: 448 LEDs  (panels 0-6 )
+//                           Right chain: 448 LEDs  (panels 7-13)
+//
+//    PROTOGEN_LAYOUT 11  →  New:  nose side=6 panels, plain side=5 panels (6+5 = 11 total)
+//                           Left  chain: 384 LEDs  (panels 0-5  — nose side)
+//                           Right chain: 320 LEDs  (panels 6-10 — plain side)
+//
+//  The value must match the panel count stored in the .anim file header byte 5.
+//  The fallback_anim.h must be generated for the same layout.
+//
+#ifndef PROTOGEN_LAYOUT
+#  define PROTOGEN_LAYOUT 14   // ← change to 11 for the new 11-panel build
+#endif
+
+#if PROTOGEN_LAYOUT == 14
+    #define LEDS_LEFT       448   // panels 0-6  (left chain)
+    #define LEDS_RIGHT      448   // panels 7-13 (right chain)
+    #define TOTAL_LEDS      896
+    // Panel indices (0-based in the flat LED array)
+    #define PANEL_EYE_L     0
+    #define PANEL_EYE_R     1
+    // Mouth panels: 2, 3, 4, 5  (4 panels)
+    #define PANEL_NOSE      6
+    // Mirror side: identical panel layout starting at panel 7
+    #define PANEL_MIRROR_OFFSET 7
+#elif PROTOGEN_LAYOUT == 11
+    #define LEDS_LEFT       384   // panels 0-5  (nose side)
+    #define LEDS_RIGHT      320   // panels 6-10 (plain side)
+    #define TOTAL_LEDS      704
+    // Nose-side panel indices
+    #define PANEL_EYE_L     0
+    #define PANEL_EYE_R     1
+    // Mouth panels (nose side): 2, 3, 4  (3 panels)
+    #define PANEL_NOSE      5
+    // Plain-side panel indices
+    #define PANEL_EYE_L2    6
+    #define PANEL_EYE_R2    7
+    // Mouth panels (plain side): 8, 9, 10  (3 panels)
+    // No nose on plain side
+#else
+    #error "PROTOGEN_LAYOUT must be 14 or 11"
+#endif
+
+#define LEDS_PER_CHAIN  LEDS_LEFT   // left (nose-side) chain length
+
 // ── Debug ─────────────────────────────────────────────────────────────────────
 #define DEBUG_BLE 0
 
@@ -19,10 +69,6 @@ extern "C" {
 #define LED_PIN_RIGHT  3
 #define SD_CS_PIN      17
 #define SOUND_AO_PIN   26
-
-// ── LED config ────────────────────────────────────────────────────────────────
-#define LEDS_PER_CHAIN  448
-#define TOTAL_LEDS      896
 
 // ── Sound / timing modes ──────────────────────────────────────────────────────
 #define SOUND_STATIC  0
@@ -37,8 +83,10 @@ extern "C" {
 #define NUS_TX_CHAR_ID    2
 
 // ── LED strips ────────────────────────────────────────────────────────────────
-Adafruit_NeoPixel stripL(LEDS_PER_CHAIN, LED_PIN_LEFT,  NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel stripR(LEDS_PER_CHAIN, LED_PIN_RIGHT, NEO_GRB + NEO_KHZ800);
+// Left  = nose side  (LEDS_LEFT  LEDs)
+// Right = plain side (LEDS_RIGHT LEDs)
+Adafruit_NeoPixel stripL(LEDS_LEFT,  LED_PIN_LEFT,  NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel stripR(LEDS_RIGHT, LED_PIN_RIGHT, NEO_GRB + NEO_KHZ800);
 
 // ── Playback state ────────────────────────────────────────────────────────────
 struct Frame {
@@ -119,14 +167,16 @@ void applySound(const LEDEntry &led, uint8_t vol,
 }
 
 // ── Push frame ────────────────────────────────────────────────────────────────
+// LED indices 0 .. LEDS_LEFT-1  → left  strip (nose side)
+// LED indices LEDS_LEFT .. TOTAL_LEDS-1 → right strip (plain side)
 void pushFrame(const LEDEntry *leds, uint8_t vol) {
     for (int i = 0; i < TOTAL_LEDS; i++) {
         uint8_t r, g, b;
         applySound(leds[i], vol, r, g, b);
-        if (i < LEDS_PER_CHAIN)
+        if (i < LEDS_LEFT)
             stripL.setPixelColor(i, stripL.Color(r, g, b));
         else
-            stripR.setPixelColor(i - LEDS_PER_CHAIN, stripR.Color(r, g, b));
+            stripR.setPixelColor(i - LEDS_LEFT, stripR.Color(r, g, b));
     }
     stripL.show();
     stripR.show();
@@ -160,9 +210,22 @@ bool openFile(int idx) {
     String path = "/" + String(fileList[idx]);
     animFile = SD.open(path.c_str());
     if (!animFile) return false;
+
+    // Validate header: magic + layout panel count must match compile-time layout
     uint8_t hdr[8];
-    if (animFile.read(hdr, 8) != 8) return false;
+    if (animFile.read(hdr, 8) != 8) { animFile.close(); return false; }
     if (memcmp(hdr, "ANIM", 4) != 0) { animFile.close(); return false; }
+    uint8_t filePanels = hdr[5];
+    if (filePanels != PROTOGEN_LAYOUT) {
+        String msg = "ERROR: file layout ";
+        msg += String(filePanels);
+        msg += " != build layout ";
+        msg += String(PROTOGEN_LAYOUT);
+        bleSendLine(msg.c_str());
+        animFile.close();
+        return false;
+    }
+
     useFallback = false;
     return true;
 }
@@ -284,6 +347,7 @@ void handleCommand(const char *cmd) {
         if (!useFallback)
             bleSendLine(("Frame:  " + String(currentFrameIdx+1) + "/" + String(totalFrames)).c_str());
         bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
+        bleSendLine("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (" + String(TOTAL_LEDS) + " LEDs)");
         bleSendLine("─────────────────────────────────");
     }
     else if (s == "reload") {
@@ -345,6 +409,16 @@ void bleDisconnected(BLEDevice *device) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
+
+    Serial.print("Build layout: ");
+    Serial.print(PROTOGEN_LAYOUT);
+    Serial.print("-panel  TOTAL_LEDS=");
+    Serial.print(TOTAL_LEDS);
+    Serial.print("  left=");
+    Serial.print(LEDS_LEFT);
+    Serial.print("  right=");
+    Serial.println(LEDS_RIGHT);
+
     analogReadResolution(12);
 
     stripL.begin(); stripR.begin();
@@ -362,6 +436,7 @@ void setup() {
         Serial.println("SD mounted");
         scanSDFiles();
         Serial.print(fileCount); Serial.println(" .anim files found");
+
         int startIndex = -1;
         for (int i = 0; i < fileCount; i++) {
             if (strcmp(fileList[i], "start.anim") == 0) {
@@ -393,7 +468,6 @@ void setup() {
     BTstack.setBLEDeviceDisconnectedCallback(bleDisconnected);
     BTstack.setGATTCharacteristicWrite(bleWriteCallback);
     BTstack.setGATTCharacteristicNotificationCallback(bleNotifyCallback);
-
     BTstack.addGATTService(new UUID(NUS_SERVICE_UUID));
     rx_value_handle = BTstack.addGATTCharacteristicDynamic(
         new UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
@@ -403,7 +477,6 @@ void setup() {
         new UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
         ATT_PROPERTY_NOTIFY,
         NUS_TX_CHAR_ID);
-
     BTstack.setup("ProtoFace");
     BTstack.startAdvertising();
     Serial.println("BLE advertising as 'ProtoFace'");
@@ -416,9 +489,10 @@ void loop() {
     if (!frameLoaded) { delay(10); return; }
 
     uint8_t vol = readVolume();
-    const LEDEntry *leds = useFallback ? fallbackFrame.leds : currentFrame.leds;
-    uint8_t  tmode       = useFallback ? fallbackFrame.timing_mode : currentFrame.timing_mode;
-    uint16_t dur         = useFallback ? fallbackFrame.duration_ms : currentFrame.duration_ms;
+
+    const LEDEntry *leds  = useFallback ? fallbackFrame.leds  : currentFrame.leds;
+    uint8_t         tmode = useFallback ? fallbackFrame.timing_mode : currentFrame.timing_mode;
+    uint16_t        dur   = useFallback ? fallbackFrame.duration_ms : currentFrame.duration_ms;
 
     pushFrame(leds, vol);
 
