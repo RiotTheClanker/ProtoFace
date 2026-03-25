@@ -8,6 +8,7 @@
 .vscode/launch.json
 .vscode/ipch
 .vscode/extensions.json
+src/fallback_anim.h
 
 # ── Compiled firmware ─────────────────────────────────────────────────────────
 # Binaries are produced by CI and attached as release assets instead
