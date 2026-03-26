@@ -30,10 +30,14 @@ extern "C" {
 #  define PROTOGEN_LAYOUT 11   // ← change to 11 for the new 11-panel build
 #endif
 
+#define LEDS_PER_PANEL  64    // all layouts use 64-LED panels
+
 #if PROTOGEN_LAYOUT == 14
     #define LEDS_LEFT       448   // panels 0-6  (left chain)
     #define LEDS_RIGHT      448   // panels 7-13 (right chain)
     #define TOTAL_LEDS      896
+    #define PANELS_LEFT     7
+    #define PANELS_RIGHT    7
     // Panel indices (0-based in the flat LED array)
     #define PANEL_EYE_L     0
     #define PANEL_EYE_R     1
@@ -42,19 +46,21 @@ extern "C" {
     // Mirror side: identical panel layout starting at panel 7
     #define PANEL_MIRROR_OFFSET 7
 #elif PROTOGEN_LAYOUT == 11
-    #define LEDS_LEFT       384   // panels 0-5  (nose side)
-    #define LEDS_RIGHT      320   // panels 6-10 (plain side)
+    #define LEDS_LEFT       384   // panels 0-5  (nose side / left chain)
+    #define LEDS_RIGHT      320   // panels 6-10 (plain side / right chain)
     #define TOTAL_LEDS      704
-    // Nose-side panel indices
+    #define PANELS_LEFT     6
+    #define PANELS_RIGHT    5
+    // Left chain logical order (eye→mouth→nose) — physical wiring is reversed:
+    //   data enters at nose, flows mouth→eye; panels are written reversed at output
     #define PANEL_EYE_L     0
     #define PANEL_EYE_R     1
-    // Mouth panels (nose side): 2, 3, 4  (3 panels)
+    // Mouth panels (left chain): 2, 3, 4  (3 panels)
     #define PANEL_NOSE      5
-    // Plain-side panel indices
+    // Right chain panel indices (eye→mouth, no nose)
     #define PANEL_EYE_L2    6
     #define PANEL_EYE_R2    7
-    // Mouth panels (plain side): 8, 9, 10  (3 panels)
-    // No nose on plain side
+    // Mouth panels (right chain): 8, 9, 10  (3 panels)
 #else
     #error "PROTOGEN_LAYOUT must be 14 or 11"
 #endif
@@ -167,16 +173,26 @@ void applySound(const LEDEntry &led, uint8_t vol,
 }
 
 // ── Push frame ────────────────────────────────────────────────────────────────
-// LED indices 0 .. LEDS_LEFT-1  → left  strip (nose side)
-// LED indices LEDS_LEFT .. TOTAL_LEDS-1 → right strip (plain side)
+// LED data is stored in logical face order: left chain eye→mouth→nose, right chain eye→mouth.
+// Hardware constraint: data flows right-to-left, so the left chain's physical
+// wiring is reversed (nose→mouth→eye). Panels are therefore written in reverse
+// order to the left strip so the image appears correctly on the face.
+// Right strip wiring matches logical order — no reversal needed.
 void pushFrame(const LEDEntry *leds, uint8_t vol) {
-    for (int i = 0; i < TOTAL_LEDS; i++) {
+    // Left strip: write panels in reverse order to correct for reversed wiring
+    for (int p = 0; p < PANELS_LEFT; p++) {
+        int srcPanel = PANELS_LEFT - 1 - p;
+        for (int j = 0; j < LEDS_PER_PANEL; j++) {
+            uint8_t r, g, b;
+            applySound(leds[srcPanel * LEDS_PER_PANEL + j], vol, r, g, b);
+            stripL.setPixelColor(p * LEDS_PER_PANEL + j, stripL.Color(r, g, b));
+        }
+    }
+    // Right strip: logical order matches physical wiring
+    for (int i = 0; i < LEDS_RIGHT; i++) {
         uint8_t r, g, b;
-        applySound(leds[i], vol, r, g, b);
-        if (i < LEDS_LEFT)
-            stripL.setPixelColor(i, stripL.Color(r, g, b));
-        else
-            stripR.setPixelColor(i - LEDS_LEFT, stripR.Color(r, g, b));
+        applySound(leds[LEDS_LEFT + i], vol, r, g, b);
+        stripR.setPixelColor(i, stripR.Color(r, g, b));
     }
     stripL.show();
     stripR.show();
