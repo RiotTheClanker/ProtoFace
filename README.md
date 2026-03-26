@@ -42,8 +42,8 @@ ProtoFace/
 
 | Signal | GPIO | Notes |
 |---|---|---|
-| Left LED chain | GP2 | NeoPixel data, 384 LEDs |
-| Right LED chain | GP3 | NeoPixel data, 320 LEDs |
+| Left LED chain | GP2 | NeoPixel data, 320 LEDs |
+| Right LED chain | GP3 | NeoPixel data, 384 LEDs |
 | SD card CS | GP17 | SPI chip-select |
 | Microphone (analog) | GP26 | ADC0 — analog sound level |
 
