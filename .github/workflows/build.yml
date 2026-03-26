@@ -2,8 +2,12 @@ name: PlatformIO CI
 on:
   push:
     branches: [ "master", "Mk3-Protogen", "Mk2-Protogen" ]
+    paths:
+      - 'src/**'
   pull_request:
     branches: [ "master" ]
+    paths:
+      - 'src/**'
 jobs:
   build:
     runs-on: ubuntu-latest
