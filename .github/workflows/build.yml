@@ -15,6 +15,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # allow the workflow to publish releases
     strategy:
       matrix:
         layout: [14]
@@ -46,3 +48,29 @@ jobs:
             .pio/build/rpipico2w/firmware.uf2
             .pio/build/rpipico2w/firmware.elf
           if-no-files-found: warn
+
+      - name: Stage release assets
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p dist
+          cp .pio/build/rpipico2w/firmware.uf2 \
+             "dist/ProtoFace-${{ github.ref_name }}-layout${{ matrix.layout }}.uf2"
+          cp .pio/build/rpipico2w/firmware.elf \
+             "dist/ProtoFace-${{ github.ref_name }}-layout${{ matrix.layout }}.elf"
+
+      - name: Publish rolling "latest" release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}-latest
+        run: |
+          # Recreate the per-branch rolling release so its tag and assets
+          # always point at the newest successful build.
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "ProtoFace ${{ github.ref_name }} — latest build" \
+            --prerelease \
+            --notes "Automated build of \`${{ github.ref_name }}\` @ \`${{ github.sha }}\` (layout ${{ matrix.layout }}).
+
+          **Flash:** hold **BOOTSEL** on the Pico 2 W while plugging in USB, then copy the \`.uf2\` onto the \`RPI-RP2\` drive that appears."
