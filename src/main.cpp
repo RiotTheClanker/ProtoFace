@@ -3,6 +3,8 @@
 #include <SD.h>
 #include <Adafruit_NeoPixel.h>
 #include <BTstackLib.h>
+#include <Wire.h>
+#include <Adafruit_HUSB238.h>
 
 // extern "C" must be at file scope, not inline with #include
 extern "C" {
@@ -74,7 +76,19 @@ extern "C" {
 #define LED_PIN_LEFT   2
 #define LED_PIN_RIGHT  3
 #define SD_CS_PIN      17
-#define SOUND_AO_PIN   26
+#define SOUND_AO_PIN   26   // SPW2430 DC (analog) output → ADC0
+
+// ── USB-C Power Delivery (HUSB238 over I2C) ───────────────────────────────────
+#define PD_I2C_SDA          4       // HUSB238 SDA  (Pico I2C0) — change to match wiring
+#define PD_I2C_SCL          5       // HUSB238 SCL  (Pico I2C0)
+#define PD_TARGET_AMPS      5.0f    // amps we would like at 5V (optimal)
+#define PD_HEADROOM         0.85f   // only budget this fraction of advertised current
+#define BASE_SYSTEM_MA      300.0f  // reserve for Pico 2W + mic + SD + logic
+#define DEFAULT_USB_MA      500.0f  // assumed budget when no HUSB238 is present
+
+// ── LED power model (SK6805-EC15) ─────────────────────────────────────────────
+#define LED_FULL_WHITE_MA   15.0f   // current one LED draws at full white (all 3 ch)
+#define LED_MIN_BRIGHTNESS  40      // never dim the LEDs below this (0-255)
 
 // ── Sound / timing modes ──────────────────────────────────────────────────────
 #define SOUND_STATIC  0
@@ -107,6 +121,13 @@ bool          playing        = true;
 bool          sdReady        = false;
 unsigned long lastFrameTime  = 0;
 
+// ── Power state ───────────────────────────────────────────────────────────────
+Adafruit_HUSB238 husb;
+bool    pdReady         = false;   // HUSB238 present & responding
+uint8_t pdVolts         = 5;       // negotiated source voltage
+float   availableAmps   = 0.0f;    // current available at pdVolts
+uint8_t powerBrightness = 255;     // LED brightness cap derived from power budget
+
 #define MAX_FILES 32
 char fileList[MAX_FILES][64];
 int  fileCount      = 0;
@@ -136,15 +157,127 @@ void bleSendLine(const char *msg) {
     bleSend(s.c_str());
 }
 
-// ── ADC ───────────────────────────────────────────────────────────────────────
+// ── ADC / Microphone ──────────────────────────────────────────────────────────
+// The SPW2430's DC (analog) output rides on a DC bias voltage; audio is a small
+// AC swing on top of it. Reading the raw pin (as the old code did) mostly returns
+// that fixed bias, so quiet and loud sounded almost the same. Instead we sample a
+// short window, take the peak-to-peak swing (which cancels the DC bias), subtract
+// an ambient noise floor, scale to 0-255, and smooth with a fast-attack /
+// slow-decay envelope so brightness tracks perceived loudness. All tunable below.
+#define MIC_SAMPLES      256    // samples taken per volume measurement
+#define MIC_NOISE_FLOOR  40     // 12-bit counts of ambient/self noise to ignore
+#define MIC_FULLSCALE    900    // peak-to-peak counts that map to full (255)
+#define MIC_ATTACK       0.60f  // 0..1 — how fast the envelope rises on louder sound
+#define MIC_DECAY        0.08f  // 0..1 — how fast the envelope falls when quieter
+
 uint8_t readVolume() {
-    uint16_t peak = 0;
-    for (int i = 0; i < 8; i++) {
+    uint16_t vmin = 4095, vmax = 0;
+    for (int i = 0; i < MIC_SAMPLES; i++) {
         uint16_t v = analogRead(SOUND_AO_PIN);
-        if (v > peak) peak = v;
-        delayMicroseconds(100);
+        if (v < vmin) vmin = v;
+        if (v > vmax) vmax = v;
     }
-    return (uint8_t)(peak >> 4);
+
+    int pp = (int)vmax - (int)vmin - MIC_NOISE_FLOOR;   // audio swing above the floor
+    if (pp < 0) pp = 0;
+
+    float norm = (float)pp / (float)(MIC_FULLSCALE - MIC_NOISE_FLOOR);
+    if (norm > 1.0f) norm = 1.0f;
+    norm = sqrtf(norm);                                 // perceptual (loudness) curve
+    float target = norm * 255.0f;
+
+    // Fast-attack / slow-decay envelope so the LEDs punch on beats but don't flicker.
+    static float env = 0.0f;
+    float rate = (target > env) ? MIC_ATTACK : MIC_DECAY;
+    env += (target - env) * rate;
+
+    return (uint8_t)(env + 0.5f);
+}
+
+// ── USB-C Power Delivery / LED current budget ─────────────────────────────────
+// Map the HUSB238 current enums to amps. Enumerators are ordered 0..15 / 0..3.
+static float currentSettingToAmps(HUSB238_CurrentSetting c) {
+    static const float A[16] = {0.5f,0.7f,1.0f,1.25f,1.5f,1.75f,2.0f,2.25f,
+                                2.5f,2.75f,3.0f,3.25f,3.5f,4.0f,4.5f,5.0f};
+    int i = (int)c;
+    return (i >= 0 && i < 16) ? A[i] : 0.0f;
+}
+static float contract5VToAmps(HUSB238_5VCurrentContract c) {
+    switch (c) {
+        case CURRENT5V_1_5_A: return 1.5f;
+        case CURRENT5V_2_4_A: return 2.4f;
+        case CURRENT5V_3_A:   return 3.0f;
+        default:              return 0.9f;   // CURRENT5V_DEFAULT (plain USB-C Rp)
+    }
+}
+
+// Turn the available current into an LED brightness cap. Worst case is every LED
+// at full white; real animations draw far less, so this is a safety ceiling.
+void applyPowerBudget() {
+    float usableMA = availableAmps * 1000.0f * PD_HEADROOM - BASE_SYSTEM_MA;
+    if (usableMA < 0) usableMA = 0;
+    float maxLedMA = (float)TOTAL_LEDS * LED_FULL_WHITE_MA;
+
+    if (maxLedMA <= usableMA) {
+        powerBrightness = 255;                          // enough headroom → full power
+    } else {
+        int b = (int)(usableMA / maxLedMA * 255.0f);
+        if (b < LED_MIN_BRIGHTNESS) b = LED_MIN_BRIGHTNESS;
+        if (b > 255) b = 255;
+        powerBrightness = (uint8_t)b;
+    }
+    stripL.setBrightness(powerBrightness);
+    stripR.setBrightness(powerBrightness);
+}
+
+// Negotiate 5V over USB-C PD (I2C) and set the LED brightness budget accordingly.
+void initPower() {
+    Wire.setSDA(PD_I2C_SDA);
+    Wire.setSCL(PD_I2C_SCL);
+    Wire.begin();
+
+    if (!husb.begin(HUSB238_I2CADDR_DEFAULT, &Wire)) {
+        Serial.println("HUSB238 not found — assuming plain USB (5V, 0.5A)");
+        pdReady       = false;
+        pdVolts       = 5;
+        availableAmps = DEFAULT_USB_MA / 1000.0f;
+        applyPowerBudget();
+        return;
+    }
+    pdReady = true;
+
+    // Ask the attached charger what it can supply, then read the 5V capability.
+    husb.getSourceCapabilities();
+    float amps5v;
+    if (husb.isVoltageDetected(PD_SRC_5V)) {
+        amps5v = currentSettingToAmps(husb.currentDetected(PD_SRC_5V));
+    } else {
+        amps5v = contract5VToAmps(husb.get5VContractA());
+    }
+
+    // We run the LEDs at 5V; request it (we'd love PD_TARGET_AMPS but take what we get).
+    husb.selectPD(PD_SRC_5V);
+    husb.requestPD();
+    delay(50);
+    if (husb.getPDSrcVoltage() == PD_5V) {
+        float negotiated = currentSettingToAmps(husb.getPDSrcCurrent());
+        if (negotiated > amps5v) amps5v = negotiated;
+    }
+
+    pdVolts       = 5;
+    availableAmps = amps5v;
+    applyPowerBudget();
+
+    Serial.print("PD: 5V @ ");
+    Serial.print(availableAmps, 2);
+    Serial.print("A available");
+    if (availableAmps + 0.001f >= PD_TARGET_AMPS * 0.9f)
+        Serial.println("  (near target — full brightness)");
+    else {
+        Serial.print("  (limited — brightness cap ");
+        Serial.print(powerBrightness);
+        Serial.println("/255)");
+    }
 }
 
 // ── Sound reaction ────────────────────────────────────────────────────────────
@@ -363,7 +496,21 @@ void handleCommand(const char *cmd) {
         if (!useFallback)
             bleSendLine(("Frame:  " + String(currentFrameIdx+1) + "/" + String(totalFrames)).c_str());
         bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
+        bleSendLine((String("Power:  ") + (pdReady ? "PD " : "USB ") + String(pdVolts)
+                     + "V " + String(availableAmps, 2) + "A  bright="
+                     + String(powerBrightness) + "/255").c_str());
         bleSendLine(("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (" + String(TOTAL_LEDS) + " LEDs)").c_str());
+        bleSendLine("─────────────────────────────────");
+    }
+    else if (s == "power") {
+        bleSendLine("── Power ────────────────────────");
+        bleSendLine(pdReady ? "Source:    USB-C PD (HUSB238)"
+                            : "Source:    USB / no PD chip");
+        bleSendLine((String("Voltage:   ") + String(pdVolts) + "V").c_str());
+        bleSendLine((String("Available: ") + String(availableAmps, 2) + "A").c_str());
+        bleSendLine((String("LED draw:  ") + String((int)(TOTAL_LEDS * LED_FULL_WHITE_MA))
+                     + "mA @ full white").c_str());
+        bleSendLine((String("Brightness cap: ") + String(powerBrightness) + "/255").c_str());
         bleSendLine("─────────────────────────────────");
     }
     else if (s == "reload") {
@@ -386,6 +533,7 @@ void handleCommand(const char *cmd) {
         bleSendLine("  next          advance one frame");
         bleSendLine("  prev          go back one frame");
         bleSendLine("  status        show current state");
+        bleSendLine("  power         show USB-C PD power info");
         bleSendLine("  reload        rescan SD card");
         bleSendLine("  help          show this message");
         bleSendLine("─────────────────────────────────");
@@ -447,6 +595,9 @@ void setup() {
     stripL.begin(); stripR.begin();
     stripL.clear(); stripL.show();
     stripR.clear(); stripR.show();
+
+    // Negotiate USB-C PD (5V) and cap LED brightness to the available current.
+    initPower();
 
     fallbackFrame = makeFallbackFrame();
     useFallback   = true;
