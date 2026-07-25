@@ -88,6 +88,7 @@ extern "C" {
 
 // ── LED power model (SK6805-EC15) ─────────────────────────────────────────────
 #define LED_FULL_WHITE_MA   15.0f   // current one LED draws at full white (all 3 ch)
+#define LED_QUIESCENT_MA    1.0f    // per-LED controller draw at ~zero output (not dimmable)
 #define LED_MIN_BRIGHTNESS  40      // never dim the LEDs below this (0-255)
 
 // ── Sound / timing modes ──────────────────────────────────────────────────────
@@ -126,7 +127,8 @@ Adafruit_HUSB238 husb;
 bool    pdReady         = false;   // HUSB238 present & responding
 uint8_t pdVolts         = 5;       // negotiated source voltage
 float   availableAmps   = 0.0f;    // current available at pdVolts
-uint8_t powerBrightness = 255;     // LED brightness cap derived from power budget
+float   ledBudgetMA     = 0.0f;    // current the LEDs may draw (after reserve/headroom)
+uint8_t lastBrightness  = 255;     // dynamic brightness applied to the last frame (0-255)
 
 #define MAX_FILES 32
 char fileList[MAX_FILES][64];
@@ -211,23 +213,13 @@ static float contract5VToAmps(HUSB238_5VCurrentContract c) {
     }
 }
 
-// Turn the available current into an LED brightness cap. Worst case is every LED
-// at full white; real animations draw far less, so this is a safety ceiling.
+// Convert the available current into an LED current budget (mA). The actual
+// dimming is done per-frame in pushFrame() from each frame's estimated draw,
+// so frames that don't peg every LED to white stay at full brightness.
 void applyPowerBudget() {
     float usableMA = availableAmps * 1000.0f * PD_HEADROOM - BASE_SYSTEM_MA;
     if (usableMA < 0) usableMA = 0;
-    float maxLedMA = (float)TOTAL_LEDS * LED_FULL_WHITE_MA;
-
-    if (maxLedMA <= usableMA) {
-        powerBrightness = 255;                          // enough headroom → full power
-    } else {
-        int b = (int)(usableMA / maxLedMA * 255.0f);
-        if (b < LED_MIN_BRIGHTNESS) b = LED_MIN_BRIGHTNESS;
-        if (b > 255) b = 255;
-        powerBrightness = (uint8_t)b;
-    }
-    stripL.setBrightness(powerBrightness);
-    stripR.setBrightness(powerBrightness);
+    ledBudgetMA = usableMA;
 }
 
 // Negotiate 5V over USB-C PD (I2C) and set the LED brightness budget accordingly.
@@ -271,13 +263,9 @@ void initPower() {
     Serial.print("PD: 5V @ ");
     Serial.print(availableAmps, 2);
     Serial.print("A available");
-    if (availableAmps + 0.001f >= PD_TARGET_AMPS * 0.9f)
-        Serial.println("  (near target — full brightness)");
-    else {
-        Serial.print("  (limited — brightness cap ");
-        Serial.print(powerBrightness);
-        Serial.println("/255)");
-    }
+    Serial.print("  → LED budget ");
+    Serial.print((int)ledBudgetMA);
+    Serial.println(" mA (dynamic per-frame dimming)");
 }
 
 // ── Sound reaction ────────────────────────────────────────────────────────────
@@ -311,20 +299,58 @@ void applySound(const LEDEntry &led, uint8_t vol,
 // wiring is reversed (nose→mouth→eye). Panels are therefore written in reverse
 // order to the left strip so the image appears correctly on the face.
 // Right strip wiring matches logical order — no reversal needed.
+// Scratch buffers holding one frame's final colours (post sound-reaction) in
+// logical order, so we can measure the frame before writing it to the strips.
+static uint8_t frameR[TOTAL_LEDS];
+static uint8_t frameG[TOTAL_LEDS];
+static uint8_t frameB[TOTAL_LEDS];
+
 void pushFrame(const LEDEntry *leds, uint8_t vol) {
-    // Left strip: write panels in reverse order to correct for reversed wiring
+    // ── Pass 1: resolve final colours and sum channel levels ──────────────────
+    uint32_t sumCh = 0;
+    for (int i = 0; i < TOTAL_LEDS; i++) {
+        uint8_t r, g, b;
+        applySound(leds[i], vol, r, g, b);
+        frameR[i] = r; frameG[i] = g; frameB[i] = b;
+        sumCh += (uint32_t)r + g + b;
+    }
+
+    // ── Estimate this frame's current draw at full brightness ─────────────────
+    //   dynamic   = (sum of channel levels / 255) × per-channel full current
+    //   quiescent = fixed per-LED controller draw (cannot be dimmed away)
+    float dynMA       = (float)sumCh / 255.0f * (LED_FULL_WHITE_MA / 3.0f);
+    float quiescentMA = (float)TOTAL_LEDS * LED_QUIESCENT_MA;
+
+    // ── Only dim if this frame would exceed the budget ────────────────────────
+    uint16_t scale = 255;                       // per-frame brightness (0-255)
+    if (ledBudgetMA > 0.0f && (dynMA + quiescentMA) > ledBudgetMA && dynMA > 0.0f) {
+        float avail = ledBudgetMA - quiescentMA;   // current left for the colour part
+        if (avail < 0) avail = 0;
+        int s = (int)(avail / dynMA * 255.0f);
+        if (s < LED_MIN_BRIGHTNESS) s = LED_MIN_BRIGHTNESS;
+        if (s > 255) s = 255;
+        scale = (uint16_t)s;
+    }
+    lastBrightness = (uint8_t)scale;            // for 'status' / 'power' reporting
+
+    // ── Pass 2: write to strips with the scale applied ────────────────────────
+    // Left strip: reverse panel order to correct for reversed physical wiring.
     for (int p = 0; p < PANELS_LEFT; p++) {
         int srcPanel = PANELS_LEFT - 1 - p;
         for (int j = 0; j < LEDS_PER_PANEL; j++) {
-            uint8_t r, g, b;
-            applySound(leds[srcPanel * LEDS_PER_PANEL + j], vol, r, g, b);
+            int src = srcPanel * LEDS_PER_PANEL + j;
+            uint8_t r = (uint16_t)frameR[src] * scale / 255;
+            uint8_t g = (uint16_t)frameG[src] * scale / 255;
+            uint8_t b = (uint16_t)frameB[src] * scale / 255;
             stripL.setPixelColor(p * LEDS_PER_PANEL + j, stripL.Color(r, g, b));
         }
     }
-    // Right strip: logical order matches physical wiring
+    // Right strip: logical order matches physical wiring.
     for (int i = 0; i < LEDS_RIGHT; i++) {
-        uint8_t r, g, b;
-        applySound(leds[LEDS_LEFT + i], vol, r, g, b);
+        int src = LEDS_LEFT + i;
+        uint8_t r = (uint16_t)frameR[src] * scale / 255;
+        uint8_t g = (uint16_t)frameG[src] * scale / 255;
+        uint8_t b = (uint16_t)frameB[src] * scale / 255;
         stripR.setPixelColor(i, stripR.Color(r, g, b));
     }
     stripL.show();
@@ -498,7 +524,7 @@ void handleCommand(const char *cmd) {
         bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
         bleSendLine((String("Power:  ") + (pdReady ? "PD " : "USB ") + String(pdVolts)
                      + "V " + String(availableAmps, 2) + "A  bright="
-                     + String(powerBrightness) + "/255").c_str());
+                     + String(lastBrightness) + "/255").c_str());
         bleSendLine(("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (" + String(TOTAL_LEDS) + " LEDs)").c_str());
         bleSendLine("─────────────────────────────────");
     }
@@ -508,9 +534,9 @@ void handleCommand(const char *cmd) {
                             : "Source:    USB / no PD chip");
         bleSendLine((String("Voltage:   ") + String(pdVolts) + "V").c_str());
         bleSendLine((String("Available: ") + String(availableAmps, 2) + "A").c_str());
-        bleSendLine((String("LED draw:  ") + String((int)(TOTAL_LEDS * LED_FULL_WHITE_MA))
-                     + "mA @ full white").c_str());
-        bleSendLine((String("Brightness cap: ") + String(powerBrightness) + "/255").c_str());
+        bleSendLine((String("LED budget: ") + String((int)ledBudgetMA) + "mA  (full white = "
+                     + String((int)(TOTAL_LEDS * LED_FULL_WHITE_MA)) + "mA)").c_str());
+        bleSendLine((String("Frame dimming: ") + String(lastBrightness) + "/255").c_str());
         bleSendLine("─────────────────────────────────");
     }
     else if (s == "reload") {
