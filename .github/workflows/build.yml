@@ -4,10 +4,14 @@ on:
     branches: [ "master", "Mk3-Protogen", "Mk2-Protogen" ]
     paths:
       - 'src/**'
+      - 'platformio.ini'
+      - '.github/workflows/build.yml'
   pull_request:
     branches: [ "master" ]
     paths:
       - 'src/**'
+      - 'platformio.ini'
+      - '.github/workflows/build.yml'
 jobs:
   build:
     runs-on: ubuntu-latest
