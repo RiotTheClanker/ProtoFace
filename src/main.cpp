@@ -514,8 +514,15 @@ void handleCommand(const char *cmd) {
         bleSendLine("─────────────────────────────────");
     }
     else if (s == "reload") {
-        scanSDFiles();
-        bleSendLine(("SD rescan: " + String(fileCount) + " files found").c_str());
+        // Retry the mount if it failed at boot so a card can be re-seated or
+        // wiring fixed without a power cycle. Each attempt re-drives CS.
+        if (!sdReady) sdReady = SD.begin(SD_CS_PIN);
+        if (sdReady) {
+            scanSDFiles();
+            bleSendLine(("SD rescan: " + String(fileCount) + " files found").c_str());
+        } else {
+            bleSendLine("SD still not mounted");
+        }
     }
     else if (s == "help") {
         bleSendLine("── Commands ─────────────────────");
@@ -597,6 +604,14 @@ void setup() {
     frameLoaded   = true;
     playing       = true;
     Serial.println("Fallback active");
+
+    // Explicitly configure SPI0 pins so the mount does not depend on the
+    // core's default mapping. Left LED/right LED are on GP2/GP3; SD uses SPI0.
+    SPI.setRX(16);    // MISO
+    SPI.setTX(19);    // MOSI
+    SPI.setSCK(18);   // SCK
+    SPI.setCS(17);    // CS (also driven in software by the SD library)
+    SPI.begin();
 
     sdReady = SD.begin(SD_CS_PIN);
     if (sdReady) {
