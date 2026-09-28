@@ -16,12 +16,13 @@ Animations are made with the companion tool,
 | Feature | Details |
 |---|---|
 | 🌈 **Dual LED chains** | 2 strips (GP2 left, GP3 right) via Adafruit NeoPixel |
-| 🧩 **Two panel layouts** | 11-panel (6+5, default) or 14-panel (7+7), chosen at build time |
+| 🧩 **Mk2 & Mk3 helmets** | Mk2 = 11 panels (6+5), Mk3 = 14 panels (7+7), chosen at build time |
 | 💾 **SD card animations** | Plays `.anim` files from SD — `start.anim` auto-loads at boot |
 | 🎤 **Sound reactivity** | Three modes per LED: Static, Snap (threshold), Linear (volume-scaled), plus sound-triggered frames |
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |
-| 🔁 **Fallback animation** | Built-in frame shown when there is no SD card or `start.anim` |
-| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `reload` |
+| ⚡ **USB-C power budgeting** | HUSB238 PD negotiation + per-frame dimming to stay within the supply |
+| 🔁 **Fallback animation** | Built-in frame per model, shown when there is no SD card or `start.anim` |
+| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `power`, `reload` |
 
 ---
 
@@ -30,10 +31,15 @@ Animations are made with the companion tool,
 ```
 ProtoFace/
 ├── src/
-│   ├── main.cpp            # Main firmware — setup, loop, BLE, SD, animation engine
-│   └── fallback_anim.h     # (optional, not committed) fallback frame exported by the tool
+│   ├── main.cpp            # Main firmware — setup, loop, BLE, SD, power, animation engine
+│   ├── fallback/
+│   │   ├── mk2_fallback.h  # Mk2 built-in fallback frame (layout 11)
+│   │   └── mk3_fallback.h  # Mk3 built-in fallback frame (layout 14)
+│   └── fallback_anim.h     # (optional, gitignored) local override exported by the tool
 ├── .github/workflows/
-│   └── build.yml           # CI — builds both layouts, uploads firmware.uf2
+│   ├── build.yml           # CI — builds Mk2 + Mk3 on every PR / push
+│   └── release.yml         # On a V* tag — builds both and publishes the release
+├── docs/releases/          # Release notes, one file per version tag
 ├── .gitignore              # Excludes .pio/ build cache, binaries and fallback_anim.h
 ├── platformio.ini          # PlatformIO project config
 └── README.md
@@ -48,24 +54,30 @@ ProtoFace/
 | Left LED chain | GP2 | NeoPixel data |
 | Right LED chain | GP3 | NeoPixel data |
 | SD card CS | GP17 | SPI chip-select |
-| Microphone (analog) | GP26 | ADC0 — analog sound level |
+| Microphone (analog) | GP26 | ADC0 — SPW2430 DC output |
+| USB-C PD (HUSB238) SDA | GP4 | I2C0 — optional; without it a 0.5 A USB budget is assumed |
+| USB-C PD (HUSB238) SCL | GP5 | I2C0 |
 
 > SPI (SD card) uses SPI0: SCK=GP18, MOSI=GP19, MISO=GP16 (set explicitly in `setup()`).
 
 ---
 
-## 🧩 Panel Layouts
+## 🧩 Models & Panel Layouts
 
 Each panel is 8×8 = 64 LEDs. The first side is wired to the left chain (GP2), the second side to the right chain (GP3).
 
-| Layout | Left chain (GP2) | Right chain (GP3) | Total |
-|---|---|---|---|
-| **11** (default) | Nose side: eyes 0–1, mouth 2–4, nose 5 — 384 LEDs | Plain side: eyes 6–7, mouth 8–10 — 320 LEDs | 704 |
-| **14** | Eyes 0–1, mouth 2–5, nose 6 — 448 LEDs | Eyes 7–8, mouth 9–12, nose 13 — 448 LEDs | 896 |
+| Model | Layout | Left chain (GP2) | Right chain (GP3) | Total |
+|---|---|---|---|---|
+| **Mk2** (default) | 11 | Nose side: eyes 0–1, mouth 2–4, nose 5 — 384 LEDs | Plain side: eyes 6–7, mouth 8–10 — 320 LEDs | 704 |
+| **Mk3** | 14 | Eyes 0–1, mouth 2–5, nose 6 — 448 LEDs | Eyes 7–8, mouth 9–12, nose 13 — 448 LEDs | 896 |
 
-Select the layout with `PROTOGEN_LAYOUT` (default `11`), either in `src/main.cpp` or by
+Select the model with `PROTOGEN_LAYOUT` (default `11` = Mk2), either in `src/main.cpp` or by
 uncommenting `-DPROTOGEN_LAYOUT=14` in `platformio.ini`. `.anim` files store their layout
 in the header, and the firmware refuses to play a file made for the other layout.
+
+LED data is stored in logical face order (eye → mouth → nose) on both sides. The left
+chain's physical wiring runs the other way (nose → mouth → eye), so `pushFrame()` writes
+the left chain's panels in reverse order; the right chain is written as-is.
 
 ---
 
@@ -74,10 +86,11 @@ in the header, and the firmware refuses to play a file made for the other layout
 The fallback frame is shown at boot when there is no SD card or no `start.anim`, and
 whenever a file fails to load.
 
-- **Default:** with no `src/fallback_anim.h`, a dim warm-orange frame is used, so a fresh
-  clone builds as-is.
-- **Custom:** in the AnimFile Maker, open the **Export .h** tab, pick a frame and export
-  `fallback_anim.h` into `src/`, then rebuild. The tool's layout selector must match
+- **Built in:** each model has its own frame in `src/fallback/` (`mk2_fallback.h`,
+  `mk3_fallback.h`), and the build picks the one for the selected model.
+- **Change it:** in the AnimFile Maker, open the **Export .h** tab, pick a frame and export it
+  over the model's file in `src/fallback/` (commit it to ship it in releases), or save it as
+  `src/fallback_anim.h` for a local-only override. The tool's layout selector must match
   `PROTOGEN_LAYOUT`; if it doesn't, the build stops with an error that says so.
 
 > **Both sides need artwork.** Each side of the face has its own panels in the file.
@@ -109,9 +122,20 @@ pio run --target upload
 pio device monitor
 ```
 
-**Prebuilt firmware:** every push and PR is built for both layouts by the
-**Firmware build** workflow. Download `ProtoFace-layout-11` / `ProtoFace-layout-14` from the
-run's **Artifacts** section on the Actions tab (these use the built-in fallback frame).
+**Prebuilt firmware:** download `ProtoFace-Mk2-<version>.uf2` or `ProtoFace-Mk3-<version>.uf2`
+from [Releases](https://github.com/RiotTheClanker/ProtoFace/releases), or use the flasher on the
+website. Every push and PR is also built for both models by the **Firmware build** workflow
+(`ProtoFace-Mk2` / `ProtoFace-Mk3` under the run's **Artifacts**).
+
+### Releasing
+
+1. Set `FIRMWARE_VERSION` in `src/main.cpp` to the new version (e.g. `"V6.2"`).
+2. Add release notes as `docs/releases/<version>.md`.
+3. Merge to `master`, then push a tag with the same name: `git tag V6.2 && git push origin V6.2`.
+
+The **Release** workflow builds both models and publishes the release with
+`ProtoFace-Mk2-<version>.uf2` and `ProtoFace-Mk3-<version>.uf2`. The names must keep
+"Mk2"/"Mk3" in them, because that's how the website's flasher sorts files by board.
 
 **Manual flash:** Hold **BOOTSEL** while plugging in USB → Pico mounts as a drive.  
 Copy `.pio/build/rpipico2w/firmware.uf2` onto it.
@@ -135,7 +159,8 @@ Connect to **"ProtoFace"** with any BLE UART app (e.g. [Serial Bluetooth Termina
 | `next` | Advance one frame |
 | `prev` | Go back one frame |
 | `bright <n>` | Set brightness 0–255 (`bright` alone shows it) |
-| `status` | Show current state (file, frame, SD, layout, brightness, mic level) |
+| `status` | Show version, model, file, frame, SD, brightness, power and mic level |
+| `power` | Show USB-C PD details and the LED current budget |
 | `reload` | Rescan SD card for new files |
 
 ---
@@ -173,10 +198,17 @@ is loaded automatically at boot; the others can be picked with `list` / `load <n
 
 ### Microphone
 
-`readVolume()` measures the **peak-to-peak** swing on GP26, which suits raw analog mic
-modules whose output idles at mid-rail (MAX4466, MAX9814, …). If your module outputs an
-envelope instead, set `MIC_PEAK_TO_PEAK` to `0` in `main.cpp`. Use `status` to see the
-current level.
+`readVolume()` measures the **peak-to-peak** swing of the SPW2430's DC output on GP26
+(which cancels its DC bias), subtracts a noise floor, applies a loudness curve and smooths
+it with a fast-attack / slow-decay envelope. Tune `MIC_NOISE_FLOOR`, `MIC_FULLSCALE`,
+`MIC_ATTACK` and `MIC_DECAY` in `main.cpp`; `status` shows the current level.
+
+### Power
+
+With a HUSB238 USB-C PD board on I2C0 (GP4/GP5), the firmware asks the charger what it can
+supply at 5 V and budgets LED current to 85% of it, less 300 mA for the rest of the system.
+Each frame's draw is estimated, and only frames that would exceed the budget are dimmed
+(never below 40/255). Without the HUSB238 a 0.5 A USB supply is assumed.
 
 ---
 
@@ -187,6 +219,7 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Library | Purpose |
 |---|---|
 | `adafruit/Adafruit NeoPixel` | LED strip driver |
+| `Adafruit_HUSB238` + `adafruit/Adafruit BusIO` | USB-C PD negotiation (HUSB238) |
 | `BTstackLib` | Bluetooth LE stack (built into earlephilhower/arduino-pico) |
 | `SD` | SD card file I/O (built into earlephilhower/arduino-pico) |
 

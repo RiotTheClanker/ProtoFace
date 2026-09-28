@@ -1,0 +1,75 @@
+name: Release
+
+# Pushing a version tag (e.g. V6.1) builds both models and publishes a GitHub
+# release with one .uf2 per model.  The file names contain "Mk2" / "Mk3",
+# which is how the website's flasher sorts them by board.
+on:
+  push:
+    tags: [ 'V*' ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.model }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - layout: 11
+            model: Mk2
+          - layout: 14
+            model: Mk3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build ${{ matrix.model }} (PROTOGEN_LAYOUT=${{ matrix.layout }})
+        env:
+          PLATFORMIO_BUILD_FLAGS: -DPROTOGEN_LAYOUT=${{ matrix.layout }}
+        run: pio run
+
+      - name: Check the firmware version matches the tag
+        run: grep -q "#define FIRMWARE_VERSION \"${GITHUB_REF_NAME}\"" src/main.cpp
+
+      - name: Rename firmware
+        run: |
+          mkdir -p dist
+          cp .pio/build/rpipico2w/firmware.uf2 "dist/ProtoFace-${{ matrix.model }}-${GITHUB_REF_NAME}.uf2"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.model }}
+          path: dist/*.uf2
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+          gh release create "$GITHUB_REF_NAME" dist/*.uf2 \
+            --title "Protogen controller ${GITHUB_REF_NAME}" \
+            --verify-tag "$@"
