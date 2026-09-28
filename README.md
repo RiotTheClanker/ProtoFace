@@ -131,7 +131,9 @@ website. Every push and PR is also built for both models by the **Firmware build
 
 1. Set `FIRMWARE_VERSION` in `src/main.cpp` to the new version (e.g. `"V6.2"`).
 2. Add release notes as `docs/releases/<version>.md`.
-3. Merge to `master`, then push a tag with the same name: `git tag V6.2 && git push origin V6.2`.
+3. Merge to `master`, then either push a tag with the same name
+   (`git tag V6.2 && git push origin V6.2`), or open **Actions → Release → Run workflow**
+   on `master` and enter the version. The tag is then created on the current `master` commit.
 
 The **Release** workflow builds both models and publishes the release with
 `ProtoFace-Mk2-<version>.uf2` and `ProtoFace-Mk3-<version>.uf2`. The names must keep
