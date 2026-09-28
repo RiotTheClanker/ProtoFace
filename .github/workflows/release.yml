@@ -1,18 +1,30 @@
 name: Release
 
-# Pushing a version tag (e.g. V6.1) builds both models and publishes a GitHub
-# release with one .uf2 per model.  The file names contain "Mk2" / "Mk3",
-# which is how the website's flasher sorts them by board.
+# Builds both models and publishes a GitHub release with one .uf2 per model.
+# Start it either by pushing a version tag (e.g. V6.1), or from the Actions
+# tab with "Run workflow" on master, entering the version — the tag is then
+# created on the current master commit.  The file names contain "Mk2" /
+# "Mk3", which is how the website's flasher sorts them by board.
 on:
   push:
     tags: [ 'V*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. V6.1) — must match FIRMWARE_VERSION'
+        required: true
 
 permissions:
   contents: read
 
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+
 jobs:
   build:
     name: Build ${{ matrix.model }}
+    # Manual releases only from master
+    if: github.event_name == 'push' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -37,12 +49,12 @@ jobs:
         run: pio run
 
       - name: Check the firmware version matches the tag
-        run: grep -q "#define FIRMWARE_VERSION \"${GITHUB_REF_NAME}\"" src/main.cpp
+        run: grep -q "#define FIRMWARE_VERSION \"${VERSION}\"" src/main.cpp
 
       - name: Rename firmware
         run: |
           mkdir -p dist
-          cp .pio/build/rpipico2w/firmware.uf2 "dist/ProtoFace-${{ matrix.model }}-${GITHUB_REF_NAME}.uf2"
+          cp .pio/build/rpipico2w/firmware.uf2 "dist/ProtoFace-${{ matrix.model }}-${VERSION}.uf2"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,8 +80,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          notes="docs/releases/${VERSION}.md"
           if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
-          gh release create "$GITHUB_REF_NAME" dist/*.uf2 \
-            --title "Protogen controller ${GITHUB_REF_NAME}" \
-            --verify-tag "$@"
+          # --target creates the tag on this commit when it doesn't exist yet
+          # (manual runs); for a pushed tag it already points here.
+          gh release create "$VERSION" dist/*.uf2 \
+            --title "Protogen controller ${VERSION}" \
+            --target "$GITHUB_SHA" "$@"
