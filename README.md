@@ -4,6 +4,8 @@ Firmware for a Protogen suit visor running on the **Raspberry Pi Pico 2 W**.
 Drives two NeoPixel chains (one per side of the visor), reads animations from an SD card,
 reacts to a microphone, and is controlled wirelessly via **Bluetooth LE (NUS/UART profile)**.
 
+[![Firmware build](https://github.com/RiotTheClanker/ProtoFace/actions/workflows/build.yml/badge.svg)](https://github.com/RiotTheClanker/ProtoFace/actions/workflows/build.yml)
+
 Animations are made with the companion tool,
 [Protogen AnimFile Maker](https://github.com/RiotTheClanker/Protogen_AnimFile_Maker).
 
@@ -30,6 +32,8 @@ ProtoFace/
 ├── src/
 │   ├── main.cpp            # Main firmware — setup, loop, BLE, SD, animation engine
 │   └── fallback_anim.h     # (optional, not committed) fallback frame exported by the tool
+├── .github/workflows/
+│   └── build.yml           # CI — builds both layouts, uploads firmware.uf2
 ├── .gitignore              # Excludes .pio/ build cache, binaries and fallback_anim.h
 ├── platformio.ini          # PlatformIO project config
 └── README.md
@@ -104,6 +108,10 @@ pio run --target upload
 # Open BLE serial monitor
 pio device monitor
 ```
+
+**Prebuilt firmware:** every push and PR is built for both layouts by the
+**Firmware build** workflow. Download `ProtoFace-layout-11` / `ProtoFace-layout-14` from the
+run's **Artifacts** section on the Actions tab (these use the built-in fallback frame).
 
 **Manual flash:** Hold **BOOTSEL** while plugging in USB → Pico mounts as a drive.  
 Copy `.pio/build/rpipico2w/firmware.uf2` onto it.
