@@ -358,10 +358,11 @@ void applySound(const LEDEntry &led, uint8_t vol,
 // right, then the nose.  The map says where each logical panel sits on its LED
 // chain (0 = first panel after the Pico) and whether it is mounted flipped.
 //
-// Default wiring: the left chain starts at the nose and runs back along the
-// mouth, then up into the eye, which it crosses front to back as drawn
-// (eye 1, then eye 2):  chain = nose, mouth 3, mouth 2, mouth 1, eye 1, eye 2.
-// The right chain follows the logical order.
+// Default wiring (chain position of each logical panel):
+//   Mk2: left  = 0 1 2 3 4 5   (eyes, mouth, nose in order; checked on a helmet)
+//        right = 3 4 0 1 2     (chain runs through the mouth first, then the eye)
+//   Mk3: left  = 6 5 4 3 2 1 0 (fully reversed, as in V6.1; not yet checked)
+//        right = 0 1 2 3 4 5 6
 //
 // If a helmet is wired differently, the 'ident' command shows each panel's
 // chain position and 'map left|right ...' changes the map without reflashing
@@ -375,16 +376,19 @@ static uint8_t mapL[PANELS_LEFT],  flipL[PANELS_LEFT];
 static uint8_t mapR[PANELS_RIGHT], flipR[PANELS_RIGHT];
 static bool    identMode = false;   // show chain positions instead of the face
 
+#if PROTOGEN_LAYOUT == 11
+static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {0, 1, 2, 3, 4, 5};
+static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {3, 4, 0, 1, 2};
+#else
+static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {6, 5, 4, 3, 2, 1, 0};
+static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {0, 1, 2, 3, 4, 5, 6};
+#endif
+
 void defaultPanelMap() {
-    for (int l = 0; l < PANELS_LEFT; l++) {
-        // eyes (logical 0,1) keep their order; mouth and nose are reversed
-        mapL[l]  = (l < 2) ? PANELS_LEFT - 2 + l : PANELS_LEFT - 1 - l;
-        flipL[l] = FLIP_NONE;
-    }
-    for (int l = 0; l < PANELS_RIGHT; l++) {
-        mapR[l]  = l;
-        flipR[l] = FLIP_NONE;
-    }
+    memcpy(mapL, DEFAULT_MAP_L, sizeof(mapL));
+    memcpy(mapR, DEFAULT_MAP_R, sizeof(mapR));
+    memset(flipL, FLIP_NONE, sizeof(flipL));
+    memset(flipR, FLIP_NONE, sizeof(flipR));
 }
 
 // Flash storage for the map (EEPROM emulation).
@@ -828,7 +832,7 @@ void handleCommand(const char *cmd) {
         bleSendLine("  reload        rescan SD card");
         bleSendLine("  ident         show each panel's chain position");
         bleSendLine("  map           show the panel map");
-        bleSendLine("  map left|right <pos..>  set it, e.g. map left 4 5 3 2 1 0");
+        bleSendLine("  map left|right <pos..>  set it, e.g. map right 3 4 0 1 2");
         bleSendLine("  map reset     back to the default map");
         bleSendLine("  help          show this message");
         bleSendLine("─────────────────────────────────");

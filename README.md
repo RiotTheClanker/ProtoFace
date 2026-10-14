@@ -77,8 +77,8 @@ in the header, and the firmware refuses to play a file made for the other layout
 
 LED data is stored in logical face order, the order the AnimFile Maker draws the panels:
 eye 1, eye 2, mouth panels left to right, then the nose. A **panel map** places each of them
-on its LED chain. By default the left chain runs nose → mouth (right to left) → eye 1 → eye 2,
-and the right chain follows the logical order.
+on its LED chain. Defaults: Mk2 left `0 1 2 3 4 5`, right `3 4 0 1 2` (checked on a helmet);
+Mk3 left `6 5 4 3 2 1 0`, right `0 1 2 3 4 5 6` (not yet checked).
 
 ### Fixing the panel order without reflashing
 
@@ -87,9 +87,9 @@ If parts of the face show up on the wrong panels, connect over BLE and:
 1. Send `ident`. Every panel shows a digit: its position on its chain (0 = first panel after
    the Pico). Green = left chain, blue = right chain. The red dot marks the panel's first LED.
 2. Write down the digit on each panel in the tool's order: eye 1, eye 2, mouth 1, 2, 3, (nose).
-3. Send `map left <digits>` and `map right <digits>`, e.g. `map left 4 5 3 2 1 0`.
+3. Send `map left <digits>` and `map right <digits>`, e.g. `map right 3 4 0 1 2`.
    Add `h` (mirror left↔right), `v` (upside down) or `r` (rotate 180°) to a digit if that
-   panel's digit looked mirrored or upside down, e.g. `map left 4 5h 3 2 1 0`.
+   panel's digit looked mirrored or upside down, e.g. `map right 3 4h 0 1 2`.
 4. Send `ident` again to go back to the face. The map is saved and survives reboots;
    `map reset` goes back to the default.
 
