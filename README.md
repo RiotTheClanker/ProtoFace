@@ -22,7 +22,7 @@ Animations are made with the companion tool,
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |
 | ⚡ **USB-C power budgeting** | HUSB238 PD negotiation + per-frame dimming to stay within the supply |
 | 🔁 **Fallback animation** | Built-in frame per model, shown when there is no SD card or `start.anim` |
-| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `power`, `reload` |
+| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `power`, `reload`, `ident`, `map` |
 
 ---
 
@@ -75,9 +75,23 @@ Select the model with `PROTOGEN_LAYOUT` (default `11` = Mk2), either in `src/mai
 uncommenting `-DPROTOGEN_LAYOUT=14` in `platformio.ini`. `.anim` files store their layout
 in the header, and the firmware refuses to play a file made for the other layout.
 
-LED data is stored in logical face order (eye → mouth → nose) on both sides. The left
-chain's physical wiring runs the other way (nose → mouth → eye), so `pushFrame()` writes
-the left chain's panels in reverse order; the right chain is written as-is.
+LED data is stored in logical face order, the order the AnimFile Maker draws the panels:
+eye 1, eye 2, mouth panels left to right, then the nose. A **panel map** places each of them
+on its LED chain. By default the left chain runs nose → mouth (right to left) → eye 1 → eye 2,
+and the right chain follows the logical order.
+
+### Fixing the panel order without reflashing
+
+If parts of the face show up on the wrong panels, connect over BLE and:
+
+1. Send `ident`. Every panel shows a digit: its position on its chain (0 = first panel after
+   the Pico). Green = left chain, blue = right chain. The red dot marks the panel's first LED.
+2. Write down the digit on each panel in the tool's order: eye 1, eye 2, mouth 1, 2, 3, (nose).
+3. Send `map left <digits>` and `map right <digits>`, e.g. `map left 4 5 3 2 1 0`.
+   Add `h` (mirror left↔right), `v` (upside down) or `r` (rotate 180°) to a digit if that
+   panel's digit looked mirrored or upside down, e.g. `map left 4 5h 3 2 1 0`.
+4. Send `ident` again to go back to the face. The map is saved and survives reboots;
+   `map reset` goes back to the default.
 
 ---
 
@@ -164,6 +178,8 @@ Connect to **"ProtoFace"** with any BLE UART app (e.g. [Serial Bluetooth Termina
 | `status` | Show version, model, file, frame, SD, brightness, power and mic level |
 | `power` | Show USB-C PD details and the LED current budget |
 | `reload` | Rescan SD card for new files |
+| `ident` | Show each panel's position on its LED chain (toggle) |
+| `map` | Show the panel map; `map left …` / `map right …` change it, `map reset` restores the default |
 
 ---
 
