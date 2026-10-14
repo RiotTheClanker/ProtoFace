@@ -101,7 +101,8 @@ The fallback frame is shown at boot when there is no SD card or no `start.anim`,
 whenever a file fails to load.
 
 - **Built in:** each model has its own frame in `src/fallback/` (`mk2_fallback.h`,
-  `mk3_fallback.h`), and the build picks the one for the selected model.
+  `mk3_fallback.h`), and the build picks the one for the selected model. It shows
+  "NO SD" on the mouth and warning triangles on the eyes and nose.
 - **Change it:** in the AnimFile Maker, open the **Export .h** tab, pick a frame and export it
   over the model's file in `src/fallback/` (commit it to ship it in releases), or save it as
   `src/fallback_anim.h` for a local-only override. The tool's layout selector must match
