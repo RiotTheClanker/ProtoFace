@@ -6,13 +6,14 @@
 #include <BluetoothLock.h>
 #include <Wire.h>
 #include <Adafruit_HUSB238.h>
+#include <EEPROM.h>
 
 // extern "C" must be at file scope, not inline with #include
 extern "C" {
 #include "ble/att_server.h"
 }
 
-#define FIRMWARE_VERSION "V6.1"
+#define FIRMWARE_VERSION "V6.2"
 
 // ── Model / layout selection ──────────────────────────────────────────────────
 //
@@ -29,7 +30,7 @@ extern "C" {
 //
 //  The value must match the panel count stored in the .anim file header byte 5.
 //  Panels in the LED data are in logical face order (eye → mouth → nose) on
-//  both sides; see pushFrame() for how that maps to the physical wiring.
+//  both sides; see "Panel map" below for how that maps to the physical wiring.
 //
 #ifndef PROTOGEN_LAYOUT
 #  define PROTOGEN_LAYOUT 11
@@ -351,13 +352,163 @@ void applySound(const LEDEntry &led, uint8_t vol,
     }
 }
 
-// ── Push frame ────────────────────────────────────────────────────────────────
-// LED data is stored in logical face order: left chain eye→mouth→nose, right
-// chain eye→mouth(→nose).  Hardware constraint: data flows right-to-left, so the
-// left chain's physical wiring is reversed (nose→mouth→eye).  Panels are
-// therefore written in reverse order to the left strip so the image appears
-// correctly on the face.  Right strip wiring matches logical order.
+// ── Panel map ─────────────────────────────────────────────────────────────────
+// LED data is stored in logical face order, the order the AnimFile Maker draws
+// the panels in: on each side eye panel 1, eye panel 2, mouth panels left to
+// right, then the nose.  The map says where each logical panel sits on its LED
+// chain (0 = first panel after the Pico) and whether it is mounted flipped.
 //
+// Default wiring (chain position of each logical panel):
+//   Mk2: left  = 0 1 2 3 4 5   (eyes, mouth, nose in order; checked on a helmet)
+//        right = 3 4 0 1 2     (chain runs through the mouth first, then the eye)
+//   Mk3: left  = 6 5 4 3 2 1 0 (fully reversed, as in V6.1; not yet checked)
+//        right = 0 1 2 3 4 5 6
+//
+// If a helmet is wired differently, the 'ident' command shows each panel's
+// chain position and 'map left|right ...' changes the map without reflashing
+// (saved to flash).  See 'help'.
+#define FLIP_NONE  0
+#define FLIP_H     1   // mirrored left↔right
+#define FLIP_V     2   // mirrored top↔bottom
+#define FLIP_HV    3   // rotated 180°
+
+static uint8_t mapL[PANELS_LEFT],  flipL[PANELS_LEFT];
+static uint8_t mapR[PANELS_RIGHT], flipR[PANELS_RIGHT];
+static bool    identMode = false;   // show chain positions instead of the face
+
+#if PROTOGEN_LAYOUT == 11
+static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {0, 1, 2, 3, 4, 5};
+static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {3, 4, 0, 1, 2};
+#else
+static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {6, 5, 4, 3, 2, 1, 0};
+static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {0, 1, 2, 3, 4, 5, 6};
+#endif
+
+void defaultPanelMap() {
+    memcpy(mapL, DEFAULT_MAP_L, sizeof(mapL));
+    memcpy(mapR, DEFAULT_MAP_R, sizeof(mapR));
+    memset(flipL, FLIP_NONE, sizeof(flipL));
+    memset(flipR, FLIP_NONE, sizeof(flipR));
+}
+
+// Flash storage for the map (EEPROM emulation).
+#define MAP_MAGIC      0x50414D31UL   // "PAM1"
+#define MAP_EEPROM_SZ  64
+
+void savePanelMap() {
+    uint32_t magic = MAP_MAGIC;
+    int a = 0;
+    EEPROM.put(a, magic);              a += sizeof(magic);
+    EEPROM.write(a++, PROTOGEN_LAYOUT);
+    for (int i = 0; i < PANELS_LEFT;  i++) { EEPROM.write(a++, mapL[i]); EEPROM.write(a++, flipL[i]); }
+    for (int i = 0; i < PANELS_RIGHT; i++) { EEPROM.write(a++, mapR[i]); EEPROM.write(a++, flipR[i]); }
+    EEPROM.commit();
+}
+
+void clearSavedPanelMap() {
+    uint32_t none = 0;
+    EEPROM.put(0, none);
+    EEPROM.commit();
+}
+
+// Valid map: every chain position used exactly once, flips in range.
+static bool validMap(const uint8_t *m, const uint8_t *f, int n) {
+    bool used[8] = {false};
+    for (int i = 0; i < n; i++) {
+        if (m[i] >= n || used[m[i]] || f[i] > FLIP_HV) return false;
+        used[m[i]] = true;
+    }
+    return true;
+}
+
+bool loadPanelMap() {
+    uint32_t magic = 0;
+    int a = 0;
+    EEPROM.get(a, magic);              a += sizeof(magic);
+    if (magic != MAP_MAGIC || EEPROM.read(a++) != PROTOGEN_LAYOUT) return false;
+    uint8_t mL[PANELS_LEFT], fL[PANELS_LEFT], mR[PANELS_RIGHT], fR[PANELS_RIGHT];
+    for (int i = 0; i < PANELS_LEFT;  i++) { mL[i] = EEPROM.read(a++); fL[i] = EEPROM.read(a++); }
+    for (int i = 0; i < PANELS_RIGHT; i++) { mR[i] = EEPROM.read(a++); fR[i] = EEPROM.read(a++); }
+    if (!validMap(mL, fL, PANELS_LEFT) || !validMap(mR, fR, PANELS_RIGHT)) return false;
+    memcpy(mapL, mL, sizeof(mL)); memcpy(flipL, fL, sizeof(fL));
+    memcpy(mapR, mR, sizeof(mR)); memcpy(flipR, fR, sizeof(fR));
+    return true;
+}
+
+// LED index within a panel after applying its mounting flip.
+static inline int flipPixel(int j, uint8_t flip) {
+    int x = j & 7, y = j >> 3;
+    if (flip & FLIP_H) x = 7 - x;
+    if (flip & FLIP_V) y = 7 - y;
+    return y * 8 + x;
+}
+
+// "4 5h 3 2 1 0"  →  one chain position per logical panel, optional h/v/r flip.
+bool parsePanelMap(String args, uint8_t *m, uint8_t *f, int n) {
+    args.trim();
+    int count = 0, i = 0, len = args.length();
+    while (i < len) {
+        while (i < len && args[i] == ' ') i++;
+        if (i >= len) break;
+        if (count >= n || !isDigit(args[i])) return false;
+        int v = 0;
+        while (i < len && isDigit(args[i])) v = v * 10 + (args[i++] - '0');
+        uint8_t fl = FLIP_NONE;
+        while (i < len && args[i] != ' ') {
+            char c = args[i++];
+            if      (c == 'h') fl ^= FLIP_H;
+            else if (c == 'v') fl ^= FLIP_V;
+            else if (c == 'r') fl ^= FLIP_HV;
+            else return false;
+        }
+        m[count] = (uint8_t)v;
+        f[count] = fl;
+        count++;
+    }
+    return count == n && validMap(m, f, n);
+}
+
+String panelMapText(const uint8_t *m, const uint8_t *f, int n) {
+    String s;
+    for (int i = 0; i < n; i++) {
+        if (i) s += ' ';
+        s += String(m[i]);
+        if (f[i] == FLIP_H)  s += 'h';
+        if (f[i] == FLIP_V)  s += 'v';
+        if (f[i] == FLIP_HV) s += 'r';
+    }
+    return s;
+}
+
+// ── Ident pattern ─────────────────────────────────────────────────────────────
+// Each panel shows its position on its chain as a digit, drawn straight into
+// the panel's LED order (no map applied): green on the left chain, blue on the
+// right, with a red dot on the panel's first LED.  A mirrored or upside-down
+// digit means that panel needs a flip in the map.
+static const uint8_t DIGITS_3x5[10][5] = {
+    {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1},
+    {7,4,7,1,7}, {7,4,7,5,7}, {7,1,2,2,2}, {7,5,7,5,7}, {7,5,7,1,7},
+};
+
+static void drawIdentPanel(Adafruit_NeoPixel &strip, int pos, uint8_t r, uint8_t g, uint8_t b) {
+    int base = pos * LEDS_PER_PANEL;
+    for (int j = 0; j < LEDS_PER_PANEL; j++) strip.setPixelColor(base + j, 0);
+    const uint8_t *d = DIGITS_3x5[pos % 10];
+    for (int y = 0; y < 5; y++)
+        for (int x = 0; x < 3; x++)
+            if (d[y] & (4 >> x))
+                strip.setPixelColor(base + (y + 2) * 8 + (x + 3), r, g, b);
+    strip.setPixelColor(base, 60, 0, 0);
+}
+
+void pushIdent() {
+    for (int p = 0; p < PANELS_LEFT;  p++) drawIdentPanel(stripL, p, 0, 60, 0);
+    for (int p = 0; p < PANELS_RIGHT; p++) drawIdentPanel(stripR, p, 0, 0, 60);
+    stripL.show();
+    stripR.show();
+}
+
+// ── Push frame ────────────────────────────────────────────────────────────────
 // Scratch buffers hold one frame's final colours (after sound reaction) in
 // logical order, so the frame's current draw can be measured before writing.
 static uint8_t frameR[TOTAL_LEDS];
@@ -395,25 +546,26 @@ void pushFrame(const LEDEntry *leds, uint8_t vol) {
     }
     lastPowerScale = (uint8_t)scale;
 
-    // ── Pass 2: write to strips with the scale applied ────────────────────────
-    // Left strip: reverse panel order to correct for reversed physical wiring.
-    for (int p = 0; p < PANELS_LEFT; p++) {
-        int srcPanel = PANELS_LEFT - 1 - p;
+    // ── Pass 2: write to strips through the panel map, scale applied ──────────
+    for (int l = 0; l < PANELS_LEFT; l++) {
+        int dst = mapL[l] * LEDS_PER_PANEL;
         for (int j = 0; j < LEDS_PER_PANEL; j++) {
-            int src = srcPanel * LEDS_PER_PANEL + j;
-            stripL.setPixelColor(p * LEDS_PER_PANEL + j,
+            int src = l * LEDS_PER_PANEL + j;
+            stripL.setPixelColor(dst + flipPixel(j, flipL[l]),
                                  (uint16_t)frameR[src] * scale / 255,
                                  (uint16_t)frameG[src] * scale / 255,
                                  (uint16_t)frameB[src] * scale / 255);
         }
     }
-    // Right strip: logical order matches physical wiring.
-    for (int i = 0; i < LEDS_RIGHT; i++) {
-        int src = LEDS_LEFT + i;
-        stripR.setPixelColor(i,
-                             (uint16_t)frameR[src] * scale / 255,
-                             (uint16_t)frameG[src] * scale / 255,
-                             (uint16_t)frameB[src] * scale / 255);
+    for (int l = 0; l < PANELS_RIGHT; l++) {
+        int dst = mapR[l] * LEDS_PER_PANEL;
+        for (int j = 0; j < LEDS_PER_PANEL; j++) {
+            int src = LEDS_LEFT + l * LEDS_PER_PANEL + j;
+            stripR.setPixelColor(dst + flipPixel(j, flipR[l]),
+                                 (uint16_t)frameR[src] * scale / 255,
+                                 (uint16_t)frameG[src] * scale / 255,
+                                 (uint16_t)frameB[src] * scale / 255);
+        }
     }
     stripL.show();
     stripR.show();
@@ -629,6 +781,42 @@ void handleCommand(const char *cmd) {
             bleSendLine("SD still not mounted");
         }
     }
+    else if (s == "ident") {
+        identMode = !identMode;
+        bleSendLine(identMode ? "Ident ON: each panel shows its chain position "
+                                "(green=left chain, blue=right, red dot=first LED). "
+                                "'ident' again to go back."
+                              : "Ident OFF");
+    }
+    else if (s == "map") {
+        bleSendLine("── Panel map ────────────────────");
+        bleSendLine("Order: eye1 eye2 mouth1.. (nose), as drawn in the tool");
+        bleSendLine("left:  " + panelMapText(mapL, flipL, PANELS_LEFT));
+        bleSendLine("right: " + panelMapText(mapR, flipR, PANELS_RIGHT));
+        bleSendLine("─────────────────────────────────");
+    }
+    else if (s == "map reset") {
+        defaultPanelMap();
+        clearSavedPanelMap();
+        bleSendLine("Panel map reset to default");
+        bleSendLine("left:  " + panelMapText(mapL, flipL, PANELS_LEFT));
+        bleSendLine("right: " + panelMapText(mapR, flipR, PANELS_RIGHT));
+    }
+    else if (s.startsWith("map left ") || s.startsWith("map right ")) {
+        bool left = s.startsWith("map left ");
+        int  n    = left ? PANELS_LEFT : PANELS_RIGHT;
+        uint8_t m[8], f[8];
+        if (!parsePanelMap(s.substring(left ? 9 : 10), m, f, n)) {
+            bleSendLine("ERROR: give " + String(n) + " chain positions 0-" + String(n - 1) +
+                        ", each once (add h/v/r to flip a panel)");
+            return;
+        }
+        memcpy(left ? mapL : mapR, m, n);
+        memcpy(left ? flipL : flipR, f, n);
+        savePanelMap();
+        bleSendLine(String(left ? "left:  " : "right: ") +
+                    panelMapText(m, f, n) + "  (saved)");
+    }
     else if (s == "help") {
         bleSendLine("── Commands ─────────────────────");
         bleSendLine("  list          list .anim files on SD");
@@ -642,6 +830,10 @@ void handleCommand(const char *cmd) {
         bleSendLine("  status        show current state");
         bleSendLine("  power         show USB-C PD power info");
         bleSendLine("  reload        rescan SD card");
+        bleSendLine("  ident         show each panel's chain position");
+        bleSendLine("  map           show the panel map");
+        bleSendLine("  map left|right <pos..>  set it, e.g. map right 3 4 0 1 2");
+        bleSendLine("  map reset     back to the default map");
         bleSendLine("  help          show this message");
         bleSendLine("─────────────────────────────────");
     }
@@ -719,6 +911,10 @@ void setup() {
 
     analogReadResolution(12);
 
+    defaultPanelMap();
+    EEPROM.begin(MAP_EEPROM_SZ);
+    Serial.println(loadPanelMap() ? "Panel map: saved" : "Panel map: default");
+
     stripL.begin(); stripR.begin();
     stripL.clear(); stripL.show();
     stripR.clear(); stripR.show();
@@ -787,7 +983,8 @@ void loop() {
     uint8_t vol = readVolume();
 
     const AnimFrame &f = useFallback ? fallbackFrame : currentFrame;
-    pushFrame(f.leds, vol);
+    if (identMode) pushIdent();
+    else           pushFrame(f.leds, vol);
 
     if (!playing || useFallback) { delay(5); return; }
 
