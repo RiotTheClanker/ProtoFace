@@ -80,6 +80,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A release made by hand on the Releases page (which also pushes the
+          # tag and starts this workflow) already exists: add the files to it
+          # instead of failing, and keep its title and notes.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/*.uf2 --clobber
+            exit 0
+          fi
           notes="docs/releases/${VERSION}.md"
           if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
           # --target creates the tag on this commit when it doesn't exist yet
