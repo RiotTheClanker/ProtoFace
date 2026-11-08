@@ -1,0 +1,23 @@
+{
+  "protoface_display": 1,
+  "name": "Custom NeoPixel eye",
+  "description": "Example: a round custom PCB with 32 WS2812 LEDs per eye. Each panel lists its LEDs' x,y positions in wiring order, so the painter only shows real LEDs.",
+  "panels": [
+    { "id": "L_eye", "w": 8, "h": 6, "x": 0,  "y": 0, "side": "left",  "region": "eye",
+      "pixels": [[2,0],[3,0],[4,0],[5,0],
+                 [6,1],[5,1],[4,1],[3,1],[2,1],[1,1],
+                 [0,2],[1,2],[2,2],[3,2],[4,2],[5,2],[6,2],[7,2],
+                 [7,3],[6,3],[5,3],[4,3],[3,3],[2,3],[1,3],[0,3],
+                 [1,4],[2,4],[3,4],[4,4],[5,4],[6,4]] },
+    { "id": "R_eye", "w": 8, "h": 6, "x": 10, "y": 0, "side": "right", "region": "eye",
+      "pixels": [[2,0],[3,0],[4,0],[5,0],
+                 [6,1],[5,1],[4,1],[3,1],[2,1],[1,1],
+                 [0,2],[1,2],[2,2],[3,2],[4,2],[5,2],[6,2],[7,2],
+                 [7,3],[6,3],[5,3],[4,3],[3,3],[2,3],[1,3],[0,3],
+                 [1,4],[2,4],[3,4],[4,4],[5,4],[6,4]] }
+  ],
+  "mirror": { "from": "left", "to": "right", "match": "region", "flip": "h" },
+  "outputs": [
+    { "type": "ws2812", "name": "eyes", "pin": 2, "color_order": "GRB", "chain": [ "L_eye", "R_eye" ] }
+  ]
+}

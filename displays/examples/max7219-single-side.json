@@ -1,0 +1,24 @@
+{
+  "protoface_display": 1,
+  "name": "MAX7219 mini",
+  "description": "Example: seven single-colour 8x8 MAX7219 modules on one SPI chain (two eyes, four mouth, one nose). A pixel lights when its brightness is at least the threshold.",
+  "panels": [
+    { "id": "eye1",   "w": 8, "h": 8, "x": 0,  "y": 0, "region": "eye" },
+    { "id": "eye2",   "w": 8, "h": 8, "x": 8,  "y": 0, "region": "eye" },
+    { "id": "mouth1", "w": 8, "h": 8, "x": 0,  "y": 8, "region": "mouth" },
+    { "id": "mouth2", "w": 8, "h": 8, "x": 8,  "y": 8, "region": "mouth" },
+    { "id": "mouth3", "w": 8, "h": 8, "x": 16, "y": 8, "region": "mouth" },
+    { "id": "mouth4", "w": 8, "h": 8, "x": 24, "y": 8, "region": "mouth" },
+    { "id": "nose",   "w": 8, "h": 8, "x": 32, "y": 0, "region": "nose" }
+  ],
+  "outputs": [
+    {
+      "type": "max7219",
+      "name": "matrix",
+      "pins": { "din": 7, "clk": 6, "cs": 8 },
+      "threshold": 64,
+      "intensity": 8,
+      "chain": [ "eye1", "eye2", "mouth1", "mouth2", "mouth3", "mouth4", { "panel": "nose", "rotate": 180 } ]
+    }
+  ]
+}

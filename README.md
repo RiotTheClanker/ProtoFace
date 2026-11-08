@@ -184,6 +184,15 @@ Connect to **"ProtoFace"** with any BLE UART app (e.g. [Serial Bluetooth Termina
 
 ---
 
+## 🧩 Display Configs (in development, `dev` branch)
+
+ProtoFace is moving from the fixed Mk2/Mk3 layouts to JSON display configs that can describe
+NeoPixel panels, custom NeoPixel PCBs, HUB75 panels and MAX7219 matrices. See
+[`docs/display-config.md`](docs/display-config.md); presets and examples are in
+[`displays/`](displays/). The firmware does not read them yet.
+
+---
+
 ## 🎞️ Animation File Format (`.anim`)
 
 Binary file format custom to this project:
