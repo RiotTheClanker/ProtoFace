@@ -172,6 +172,8 @@ The firmware plays a file only if its pixel count and layout ID match the active
 
 Version 1 files (8-byte header, byte 5 = 11 or 14) keep working: they load on a config made
 of exactly that many 8×8 grid panels, which is true for the Mk2 and Mk3 presets.
+The AnimFile Maker still saves version 1 for such displays, so released firmware keeps
+playing files made for Mk2 and Mk3.
 
 ## Limits of the first firmware version
 
