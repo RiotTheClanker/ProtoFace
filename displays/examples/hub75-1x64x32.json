@@ -1,0 +1,22 @@
+{
+  "protoface_display": 1,
+  "name": "HUB75 64x32",
+  "description": "Example: a single 64x32 HUB75 panel drawn as one plain surface. Check the pins and scan rate against your panel before using it.",
+  "outlines": false,
+  "panels": [
+    { "id": "Face", "w": 64, "h": 32, "x": 0, "y": 0 }
+  ],
+  "outputs": [
+    {
+      "type": "hub75",
+      "name": "panel",
+      "width": 64,
+      "height": 32,
+      "chain": 1,
+      "scan": 16,
+      "pins": { "rgb": [6, 7, 8, 9, 10, 11], "addr": [12, 13, 14, 15], "clk": 20, "lat": 21, "oe": 22 },
+      "place": [ { "panel": "Face", "x": 0, "y": 0 } ]
+    }
+  ],
+  "limits": { "max_ma": 2000 }
+}

@@ -1,16 +1,13 @@
 {
   "protoface_display": 1,
   "name": "HUB75 2x 64x32",
-  "description": "Example: two 64x32 HUB75 panels chained, one per side of the visor, each split into eye, nose and mouth panels. Check the pins and scan rate against your panels before using it.",
+  "description": "Example: two 64x32 HUB75 panels chained, one per side of the visor. Each panel is drawn as one plain surface with no eye/mouth/nose regions. Check the pins and scan rate against your panels before using it.",
+  "outlines": false,
   "panels": [
-    { "id": "L_eye",   "w": 32, "h": 16, "x": 0,   "y": 0,  "side": "left",  "region": "eye" },
-    { "id": "L_nose",  "w": 16, "h": 8,  "x": 48,  "y": 0,  "side": "left",  "region": "nose" },
-    { "id": "L_mouth", "w": 64, "h": 16, "x": 0,   "y": 16, "side": "left",  "region": "mouth" },
-    { "id": "R_eye",   "w": 32, "h": 16, "x": 104, "y": 0,  "side": "right", "region": "eye" },
-    { "id": "R_nose",  "w": 16, "h": 8,  "x": 72,  "y": 0,  "side": "right", "region": "nose" },
-    { "id": "R_mouth", "w": 64, "h": 16, "x": 72,  "y": 16, "side": "right", "region": "mouth" }
+    { "id": "Left",  "w": 64, "h": 32, "x": 0,  "y": 0, "side": "left" },
+    { "id": "Right", "w": 64, "h": 32, "x": 68, "y": 0, "side": "right" }
   ],
-  "mirror": { "from": "left", "to": "right", "match": "region", "flip": "h" },
+  "mirror": { "from": "left", "to": "right", "match": "order", "flip": "h" },
   "outputs": [
     {
       "type": "hub75",
@@ -21,12 +18,8 @@
       "scan": 16,
       "pins": { "rgb": [6, 7, 8, 9, 10, 11], "addr": [12, 13, 14, 15], "clk": 20, "lat": 21, "oe": 22 },
       "place": [
-        { "panel": "L_eye",   "x": 0,   "y": 0 },
-        { "panel": "L_nose",  "x": 48,  "y": 0 },
-        { "panel": "L_mouth", "x": 0,   "y": 16 },
-        { "panel": "R_eye",   "x": 96,  "y": 0 },
-        { "panel": "R_nose",  "x": 64,  "y": 0 },
-        { "panel": "R_mouth", "x": 64,  "y": 16 }
+        { "panel": "Left",  "x": 0,  "y": 0 },
+        { "panel": "Right", "x": 64, "y": 0 }
       ]
     }
   ],

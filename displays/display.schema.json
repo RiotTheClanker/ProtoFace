@@ -4,20 +4,60 @@
   "title": "ProtoFace display config",
   "description": "See docs/display-config.md. Cross-references (every panel used exactly once, ids unique, pixels inside the panel) are checked by the tools, not by this schema.",
   "type": "object",
-  "required": ["protoface_display", "name", "panels", "outputs"],
+  "required": [
+    "protoface_display",
+    "name",
+    "panels",
+    "outputs"
+  ],
   "properties": {
-    "protoface_display": { "const": 1 },
-    "name": { "type": "string", "minLength": 1, "maxLength": 32 },
-    "description": { "type": "string" },
-    "panels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/panel" } },
+    "protoface_display": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "description": {
+      "type": "string"
+    },
+    "outlines": {
+      "type": "boolean",
+      "description": "Draw region outlines and labels in the tool (default true)"
+    },
+    "panels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/panel"
+      }
+    },
     "mirror": {
       "type": "object",
-      "required": ["from", "to"],
+      "required": [
+        "from",
+        "to"
+      ],
       "properties": {
-        "from": { "type": "string" },
-        "to": { "type": "string" },
-        "match": { "const": "region" },
-        "flip": { "enum": ["none", "h"] }
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "match": {
+          "enum": [
+            "region",
+            "order"
+          ]
+        },
+        "flip": {
+          "enum": [
+            "none",
+            "h"
+          ]
+        }
       },
       "additionalProperties": false
     },
@@ -26,45 +66,101 @@
       "minItems": 1,
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/ws2812" },
-          { "$ref": "#/$defs/hub75" },
-          { "$ref": "#/$defs/max7219" }
+          {
+            "$ref": "#/$defs/ws2812"
+          },
+          {
+            "$ref": "#/$defs/hub75"
+          },
+          {
+            "$ref": "#/$defs/max7219"
+          }
         ]
       }
     },
     "limits": {
       "type": "object",
       "properties": {
-        "ma_per_led_white": { "type": "number", "minimum": 0 },
-        "ma_per_led_idle": { "type": "number", "minimum": 0 },
-        "min_brightness": { "type": "integer", "minimum": 0, "maximum": 255 },
-        "max_ma": { "type": "number", "minimum": 0 }
+        "ma_per_led_white": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ma_per_led_idle": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_brightness": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "max_ma": {
+          "type": "number",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     }
   },
   "additionalProperties": false,
   "$defs": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,24}$" },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,24}$"
+    },
     "panel": {
       "type": "object",
-      "required": ["id", "w", "h", "x", "y"],
+      "required": [
+        "id",
+        "w",
+        "h",
+        "x",
+        "y"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "w": { "type": "integer", "minimum": 1, "maximum": 256 },
-        "h": { "type": "integer", "minimum": 1, "maximum": 256 },
-        "x": { "type": "integer", "minimum": 0 },
-        "y": { "type": "integer", "minimum": 0 },
-        "side": { "type": "string" },
-        "region": { "type": "string" },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "w": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "h": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "side": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
         "pixels": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "array",
             "prefixItems": [
-              { "type": "integer", "minimum": 0, "maximum": 255 },
-              { "type": "integer", "minimum": 0, "maximum": 255 }
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              }
             ],
             "minItems": 2,
             "maxItems": 2
@@ -73,63 +169,192 @@
       },
       "additionalProperties": false
     },
-    "wiring": { "enum": ["rows", "serpentine", "columns", "columns_serpentine"] },
-    "start": { "enum": ["top-left", "top-right", "bottom-left", "bottom-right"] },
+    "wiring": {
+      "enum": [
+        "rows",
+        "serpentine",
+        "columns",
+        "columns_serpentine"
+      ]
+    },
+    "start": {
+      "enum": [
+        "top-left",
+        "top-right",
+        "bottom-left",
+        "bottom-right"
+      ]
+    },
     "transform": {
-      "flip": { "enum": ["none", "h", "v", "hv"] },
-      "rotate": { "enum": [0, 90, 180, 270] }
+      "flip": {
+        "enum": [
+          "none",
+          "h",
+          "v",
+          "hv"
+        ]
+      },
+      "rotate": {
+        "enum": [
+          0,
+          90,
+          180,
+          270
+        ]
+      }
     },
     "chainEntry": {
       "oneOf": [
-        { "$ref": "#/$defs/id" },
+        {
+          "$ref": "#/$defs/id"
+        },
         {
           "type": "object",
-          "required": ["panel"],
+          "required": [
+            "panel"
+          ],
           "properties": {
-            "panel": { "$ref": "#/$defs/id" },
-            "flip": { "$ref": "#/$defs/transform/flip" },
-            "rotate": { "$ref": "#/$defs/transform/rotate" },
-            "wiring": { "$ref": "#/$defs/wiring" },
-            "start": { "$ref": "#/$defs/start" }
+            "panel": {
+              "$ref": "#/$defs/id"
+            },
+            "flip": {
+              "$ref": "#/$defs/transform/flip"
+            },
+            "rotate": {
+              "$ref": "#/$defs/transform/rotate"
+            },
+            "wiring": {
+              "$ref": "#/$defs/wiring"
+            },
+            "start": {
+              "$ref": "#/$defs/start"
+            }
           },
           "additionalProperties": false
         }
       ]
     },
-    "gpio": { "type": "integer", "minimum": 0, "maximum": 29 },
+    "gpio": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 29
+    },
     "ws2812": {
       "type": "object",
-      "required": ["type", "pin", "chain"],
+      "required": [
+        "type",
+        "pin",
+        "chain"
+      ],
       "properties": {
-        "type": { "const": "ws2812" },
-        "name": { "type": "string" },
-        "pin": { "$ref": "#/$defs/gpio" },
-        "color_order": { "enum": ["RGB", "RBG", "GRB", "GBR", "BRG", "BGR"] },
-        "wiring": { "$ref": "#/$defs/wiring" },
-        "start": { "$ref": "#/$defs/start" },
-        "chain": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/chainEntry" } }
+        "type": {
+          "const": "ws2812"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pin": {
+          "$ref": "#/$defs/gpio"
+        },
+        "color_order": {
+          "enum": [
+            "RGB",
+            "RBG",
+            "GRB",
+            "GBR",
+            "BRG",
+            "BGR"
+          ]
+        },
+        "wiring": {
+          "$ref": "#/$defs/wiring"
+        },
+        "start": {
+          "$ref": "#/$defs/start"
+        },
+        "chain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/chainEntry"
+          }
+        }
       },
       "additionalProperties": false
     },
     "hub75": {
       "type": "object",
-      "required": ["type", "width", "height", "pins", "place"],
+      "required": [
+        "type",
+        "width",
+        "height",
+        "pins",
+        "place"
+      ],
       "properties": {
-        "type": { "const": "hub75" },
-        "name": { "type": "string" },
-        "width": { "type": "integer", "minimum": 8, "maximum": 128 },
-        "height": { "type": "integer", "minimum": 8, "maximum": 64 },
-        "chain": { "type": "integer", "minimum": 1, "maximum": 4 },
-        "scan": { "enum": [8, 16, 32] },
+        "type": {
+          "const": "hub75"
+        },
+        "name": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 128
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 64
+        },
+        "chain": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "scan": {
+          "enum": [
+            8,
+            16,
+            32
+          ]
+        },
         "pins": {
           "type": "object",
-          "required": ["rgb", "addr", "clk", "lat", "oe"],
+          "required": [
+            "rgb",
+            "addr",
+            "clk",
+            "lat",
+            "oe"
+          ],
           "properties": {
-            "rgb": { "type": "array", "items": { "$ref": "#/$defs/gpio" }, "minItems": 6, "maxItems": 6 },
-            "addr": { "type": "array", "items": { "$ref": "#/$defs/gpio" }, "minItems": 3, "maxItems": 5 },
-            "clk": { "$ref": "#/$defs/gpio" },
-            "lat": { "$ref": "#/$defs/gpio" },
-            "oe": { "$ref": "#/$defs/gpio" }
+            "rgb": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/gpio"
+              },
+              "minItems": 6,
+              "maxItems": 6
+            },
+            "addr": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/gpio"
+              },
+              "minItems": 3,
+              "maxItems": 5
+            },
+            "clk": {
+              "$ref": "#/$defs/gpio"
+            },
+            "lat": {
+              "$ref": "#/$defs/gpio"
+            },
+            "oe": {
+              "$ref": "#/$defs/gpio"
+            }
           },
           "additionalProperties": false
         },
@@ -138,13 +363,29 @@
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["panel", "x", "y"],
+            "required": [
+              "panel",
+              "x",
+              "y"
+            ],
             "properties": {
-              "panel": { "$ref": "#/$defs/id" },
-              "x": { "type": "integer", "minimum": 0 },
-              "y": { "type": "integer", "minimum": 0 },
-              "flip": { "$ref": "#/$defs/transform/flip" },
-              "rotate": { "$ref": "#/$defs/transform/rotate" }
+              "panel": {
+                "$ref": "#/$defs/id"
+              },
+              "x": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "y": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "flip": {
+                "$ref": "#/$defs/transform/flip"
+              },
+              "rotate": {
+                "$ref": "#/$defs/transform/rotate"
+              }
             },
             "additionalProperties": false
           }
@@ -154,23 +395,55 @@
     },
     "max7219": {
       "type": "object",
-      "required": ["type", "pins", "chain"],
+      "required": [
+        "type",
+        "pins",
+        "chain"
+      ],
       "properties": {
-        "type": { "const": "max7219" },
-        "name": { "type": "string" },
+        "type": {
+          "const": "max7219"
+        },
+        "name": {
+          "type": "string"
+        },
         "pins": {
           "type": "object",
-          "required": ["din", "clk", "cs"],
+          "required": [
+            "din",
+            "clk",
+            "cs"
+          ],
           "properties": {
-            "din": { "$ref": "#/$defs/gpio" },
-            "clk": { "$ref": "#/$defs/gpio" },
-            "cs": { "$ref": "#/$defs/gpio" }
+            "din": {
+              "$ref": "#/$defs/gpio"
+            },
+            "clk": {
+              "$ref": "#/$defs/gpio"
+            },
+            "cs": {
+              "$ref": "#/$defs/gpio"
+            }
           },
           "additionalProperties": false
         },
-        "threshold": { "type": "integer", "minimum": 0, "maximum": 255 },
-        "intensity": { "type": "integer", "minimum": 0, "maximum": 15 },
-        "chain": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/chainEntry" } }
+        "threshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "intensity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "chain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/chainEntry"
+          }
+        }
       },
       "additionalProperties": false
     }

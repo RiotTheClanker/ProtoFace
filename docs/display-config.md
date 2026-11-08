@@ -7,7 +7,7 @@ pixels reach the hardware (**outputs**). The same file is used by the firmware a
 [AnimFile Maker](https://github.com/RiotTheClanker/Protogen_AnimFile_Maker).
 
 - Presets: [`displays/mk2.json`](../displays/mk2.json), [`displays/mk3.json`](../displays/mk3.json)
-- Examples: [`displays/examples/`](../displays/examples/) (HUB75, MAX7219, custom NeoPixel PCB)
+- Examples: [`displays/examples/`](../displays/examples/) (one or two plain HUB75 panels, MAX7219, custom NeoPixel PCB)
 - JSON schema: [`displays/display.schema.json`](../displays/display.schema.json)
 
 ## Where the firmware gets its config
@@ -31,6 +31,7 @@ one. `display` shows the active config and `display reset` goes back to the bake
 | `description` | no | Free text |
 | `panels` | yes | Logical drawing surfaces, in `.anim` data order |
 | `mirror` | no | How "Mirror to other side" pairs panels in the tool |
+| `outlines` | no | `false` hides the region outlines and labels in the tool (default `true`) |
 | `outputs` | yes | Hardware drivers and which panels each one shows |
 | `limits` | no | Power-budget settings |
 
@@ -46,7 +47,7 @@ exist for the config. Rewiring is done in `outputs`, never by reordering panels.
 | `w`, `h` | yes | Size in pixels (1–256) |
 | `x`, `y` | yes | Top-left position on the painter canvas, in pixels. Only affects how the tool draws it |
 | `side` | no | Which half of the visor, usually `left` or `right`. Used for mirroring and labels |
-| `region` | no | Any name, usually `eye`, `mouth`, `nose`. The tool makes a fill button per region |
+| `region` | no | Any name, usually `eye`, `mouth`, `nose`. The tool makes a fill button per region. Leave it out for a plain panel, such as one big HUB75 panel: it is filled and labelled by its `id` |
 | `pixels` | no | Irregular panels: a list of `[x, y]` LED positions inside `w`×`h`, in LED order |
 
 Pixel order inside a panel, which is both the `.anim` order and the order the firmware sees:
@@ -61,8 +62,10 @@ Pixel order inside a panel, which is both the `.anim` order and the order the fi
 "mirror": { "from": "left", "to": "right", "match": "region", "flip": "h" }
 ```
 
-Painting a pixel on a `from`-side panel also paints the matching `to`-side panel. Panels are
-matched by `region` and then by their order within the region. With `"flip": "h"` the image
+Painting a pixel on a `from`-side panel also paints the matching `to`-side panel. With
+`"match": "region"` (the default) panels are matched by `region` and then by their order
+within the region. With `"match": "order"` the two sides' panels are paired in order, which
+suits panels without regions, such as one HUB75 panel per side. With `"flip": "h"` the image
 is mirrored left↔right: pixels are flipped inside the panel and the panel order within each
 region is reversed. `"flip": "none"` copies the image as-is. The tool's checkbox starts at
 this value and the artist can change it.
