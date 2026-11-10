@@ -6,9 +6,11 @@ name: Release
 # Start it by pushing a version tag (e.g. V7.0), or from the Actions tab with
 # "Run workflow", entering the version:
 #   - on master: a normal release; the version must equal FIRMWARE_VERSION.
-#   - on dev: a test prerelease (never marked "latest"); the version must
-#     start with FIRMWARE_VERSION and contain "-dev", e.g. V7.0-dev.1.
-# A version with a "-" in it (V7.0-dev.1, V7.0-rc1) is always a prerelease.
+#   - on dev: a test build; the version must start with FIRMWARE_VERSION and
+#     contain "-dev", e.g. V7.0-dev.1.
+# A version with a "-" in it (V7.0-dev.1, V7.0-rc1) becomes a DRAFT prerelease:
+# only repo members can see it, so the website never picks it up. Publish it
+# by hand on the Releases page if it should become public.
 on:
   push:
     tags: [ 'V*' ]
@@ -91,7 +93,7 @@ jobs:
             exit 0
           fi
           case "$VERSION" in
-            *-*) pre=true; set -- --prerelease --latest=false ;;
+            *-*) pre=true; set -- --draft --prerelease --latest=false ;;
             *)   pre=false; set -- ;;
           esac
           notes="docs/releases/${VERSION}.md"
