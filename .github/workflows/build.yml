@@ -11,17 +11,9 @@ permissions:
 
 jobs:
   build:
-    # Job names are used as required status checks — keep them stable.
-    name: Firmware build (layout ${{ matrix.layout }})
+    # One firmware for every helmet: the display comes from display.json.
+    name: Firmware build
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - layout: 11
-            model: Mk2
-          - layout: 14
-            model: Mk3
     steps:
       - uses: actions/checkout@v4
 
@@ -40,14 +32,23 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build ${{ matrix.model }} (PROTOGEN_LAYOUT=${{ matrix.layout }})
-        env:
-          PLATFORMIO_BUILD_FLAGS: -DPROTOGEN_LAYOUT=${{ matrix.layout }}
+      - name: Build
         run: pio run
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: ProtoFace-${{ matrix.model }}
+          name: ProtoFace
           path: .pio/build/rpipico2w/firmware.uf2
           if-no-files-found: error
+
+  host-tests:
+    # Display-config code, tested on the runner (no Pico needed)
+    name: Display config tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch ArduinoJson
+        run: git clone --depth 1 --branch v7.4.2 https://github.com/bblanchon/ArduinoJson tests/host/ArduinoJson
+      - name: Run
+        run: make -C tests/host
