@@ -1,7 +1,7 @@
 # 🐾 ProtoFace — Protogen Visor Firmware
 
 Firmware for a Protogen suit visor running on the **Raspberry Pi Pico 2 W**.  
-Drives two NeoPixel chains (one per side of the visor), reads animations from an SD card,
+Drives the LED panels described by a `display.json`, reads animations from an SD card,
 reacts to a microphone, and is controlled wirelessly via **Bluetooth LE (NUS/UART profile)**.
 
 [![Firmware build](https://github.com/RiotTheClanker/ProtoFace/actions/workflows/build.yml/badge.svg)](https://github.com/RiotTheClanker/ProtoFace/actions/workflows/build.yml)
@@ -15,14 +15,14 @@ Animations are made with the companion tool,
 
 | Feature | Details |
 |---|---|
-| 🌈 **Dual LED chains** | 2 strips (GP2 left, GP3 right) via Adafruit NeoPixel |
-| 🧩 **Mk2 & Mk3 helmets** | Mk2 = 11 panels (6+5), Mk3 = 14 panels (7+7), chosen at build time |
+| 🧩 **Any panel layout** | One firmware for every helmet: `display.json` on the SD card describes the panels and wiring |
+| 🌈 **NeoPixel outputs** | Up to 4 WS2812 chains on any free pins (HUB75 and MAX7219 planned) |
 | 💾 **SD card animations** | Plays `.anim` files from SD — `start.anim` auto-loads at boot |
 | 🎤 **Sound reactivity** | Three modes per LED: Static, Snap (threshold), Linear (volume-scaled), plus sound-triggered frames |
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |
 | ⚡ **USB-C power budgeting** | HUSB238 PD negotiation + per-frame dimming to stay within the supply |
-| 🔁 **Fallback animation** | Built-in frame per model, shown when there is no SD card or `start.anim` |
-| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `power`, `reload`, `ident`, `map` |
+| 🔁 **Fallback face** | "NO SD" and warning triangles, drawn for whatever display is set up |
+| ⌨️ **CLI over BLE** | `list`, `load`, `fallback`, `play`, `pause`, `next`, `prev`, `bright`, `status`, `power`, `reload`, `ident`, `display` |
 
 ---
 
@@ -32,15 +32,15 @@ Animations are made with the companion tool,
 ProtoFace/
 ├── src/
 │   ├── main.cpp            # Main firmware — setup, loop, BLE, SD, power, animation engine
-│   ├── fallback/
-│   │   ├── mk2_fallback.h  # Mk2 built-in fallback frame (layout 11)
-│   │   └── mk3_fallback.h  # Mk3 built-in fallback frame (layout 14)
-│   └── fallback_anim.h     # (optional, gitignored) local override exported by the tool
+│   └── pf_config.{h,cpp}   # display.json parser, LED mapping, built-in NO SD face
+├── displays/               # display.json files: mk2.json, mk3.json, examples/, schema
+├── docs/display-config.md  # The display.json format
+├── tests/host/             # Unit tests for pf_config, run on a PC / in CI
 ├── .github/workflows/
-│   ├── build.yml           # CI — builds Mk2 + Mk3 on every PR / push
-│   └── release.yml         # On a V* tag — builds both and publishes the release
+│   ├── build.yml           # CI — firmware build + display config tests on every PR / push
+│   └── release.yml         # On a V* tag — builds and publishes the release
 ├── docs/releases/          # Release notes, one file per version tag
-├── .gitignore              # Excludes .pio/ build cache, binaries and fallback_anim.h
+├── .gitignore              # Excludes .pio/ build cache and binaries
 ├── platformio.ini          # PlatformIO project config
 └── README.md
 ```
@@ -51,8 +51,7 @@ ProtoFace/
 
 | Signal | GPIO | Notes |
 |---|---|---|
-| Left LED chain | GP2 | NeoPixel data |
-| Right LED chain | GP3 | NeoPixel data |
+| LED outputs | set in `display.json` | Mk2/Mk3 configs use GP2 (left) and GP3 (right) |
 | SD card CS | GP17 | SPI chip-select |
 | Microphone (analog) | GP26 | ADC0 — SPW2430 DC output |
 | USB-C PD (HUSB238) SDA | GP4 | I2C0 — optional; without it a 0.5 A USB budget is assumed |
@@ -62,51 +61,40 @@ ProtoFace/
 
 ---
 
-## 🧩 Models & Panel Layouts
+## 🧩 Display Config (`display.json`)
 
-Each panel is 8×8 = 64 LEDs. The first side is wired to the left chain (GP2), the second side to the right chain (GP3).
+The firmware has no built-in panel layout. The panels, their pins and their wiring are
+described by a `display.json` (format: [`docs/display-config.md`](docs/display-config.md)).
 
-| Model | Layout | Left chain (GP2) | Right chain (GP3) | Total |
-|---|---|---|---|---|
-| **Mk2** (default) | 11 | Nose side: eyes 0–1, mouth 2–4, nose 5 — 384 LEDs | Plain side: eyes 6–7, mouth 8–10 — 320 LEDs | 704 |
-| **Mk3** | 14 | Eyes 0–1, mouth 2–5, nose 6 — 448 LEDs | Eyes 7–8, mouth 9–12, nose 13 — 448 LEDs | 896 |
+1. Copy a config to the root of the SD card as `display.json`:
+   [`displays/mk2.json`](displays/mk2.json) (11 panels, GP2 + GP3),
+   [`displays/mk3.json`](displays/mk3.json) (14 panels), or one from
+   [`displays/examples/`](displays/examples/) or your own.
+2. Boot the helmet. A new or changed `display.json` is checked and copied into the Pico's
+   flash, and the flash copy is used from then on, so the face keeps working without the
+   card. A bad file is not used: `status` says why, and the old config stays.
+3. To change the display, replace the file on the card and reboot (or send `reload`).
 
-Select the model with `PROTOGEN_LAYOUT` (default `11` = Mk2), either in `src/main.cpp` or by
-uncommenting `-DPROTOGEN_LAYOUT=14` in `platformio.ini`. `.anim` files store their layout
-in the header, and the firmware refuses to play a file made for the other layout.
+Without a config in flash nothing lights up. The SD card, microphone, USB-PD and wireless
+pins (GP4–5, GP16–19, GP26, GP23–25, GP29) can't be used by a config.
 
-LED data is stored in logical face order, the order the AnimFile Maker draws the panels:
-eye 1, eye 2, mouth panels left to right, then the nose. A **panel map** places each of them
-on its LED chain. Defaults: Mk2 left `0 1 2 3 4 5`, right `3 4 0 1 2` (checked on a helmet);
-Mk3 left `6 5 4 3 2 1 0`, right `0 1 2 3 4 5 6` (not yet checked).
+`.anim` files must match the config: version 2 files carry a layout ID, version 1 files
+(Mk2/Mk3) play on any config made of 11 or 14 8×8 panels.
 
-### Fixing the panel order without reflashing
+### Checking the wiring
 
-If parts of the face show up on the wrong panels, connect over BLE and:
-
-1. Send `ident`. Every panel shows a digit: its position on its chain (0 = first panel after
-   the Pico). Green = left chain, blue = right chain. The red dot marks the panel's first LED.
-2. Write down the digit on each panel in the tool's order: eye 1, eye 2, mouth 1, 2, 3, (nose).
-3. Send `map left <digits>` and `map right <digits>`, e.g. `map right 3 4 0 1 2`.
-   Add `h` (mirror left↔right), `v` (upside down) or `r` (rotate 180°) to a digit if that
-   panel's digit looked mirrored or upside down, e.g. `map right 3 4h 0 1 2`.
-4. Send `ident` again to go back to the face. The map is saved and survives reboots;
-   `map reset` goes back to the default.
+Send `ident`: every panel shows a digit, its position on its output's chain (0 = first
+panel after the Pico), one colour per output, with a red dot on the panel's first LED.
+If panels are in the wrong place or mounted turned, fix the `chain` order or the panel's
+`flip`/`rotate` in `display.json`. Send `ident` again to go back to the face.
 
 ---
 
-## 🔁 Fallback Animation
+## 🔁 Fallback Face
 
-The fallback frame is shown at boot when there is no SD card or no `start.anim`, and
-whenever a file fails to load.
-
-- **Built in:** each model has its own frame in `src/fallback/` (`mk2_fallback.h`,
-  `mk3_fallback.h`), and the build picks the one for the selected model. It shows
-  "NO SD" on the mouth and warning triangles on the eyes and nose.
-- **Change it:** in the AnimFile Maker, open the **Export .h** tab, pick a frame and export it
-  over the model's file in `src/fallback/` (commit it to ship it in releases), or save it as
-  `src/fallback_anim.h` for a local-only override. The tool's layout selector must match
-  `PROTOGEN_LAYOUT`; if it doesn't, the build stops with an error that says so.
+The fallback face is shown at boot when there is no SD card or no `start.anim`, and
+whenever a file fails to load. It is drawn from the display config: "NO SD" on the mouth
+panels and warning triangles on the eyes and nose (a big panel without regions gets a triangle above "NO SD").
 
 > **Both sides need artwork.** Each side of the face has its own panels in the file.
 > In the tool, keep **Mirror to other side** ticked (or use **Copy side 1 → side 2**) so the
@@ -137,10 +125,10 @@ pio run --target upload
 pio device monitor
 ```
 
-**Prebuilt firmware:** download `ProtoFace-Mk2-<version>.uf2` or `ProtoFace-Mk3-<version>.uf2`
-from [Releases](https://github.com/RiotTheClanker/ProtoFace/releases), or use the flasher on the
-website. Every push and PR is also built for both models by the **Firmware build** workflow
-(`ProtoFace-Mk2` / `ProtoFace-Mk3` under the run's **Artifacts**).
+**Prebuilt firmware:** released versions (Mk2/Mk3 builds) are under
+[Releases](https://github.com/RiotTheClanker/ProtoFace/releases) and on the website's flasher.
+Every push and PR is built by the **Firmware build** workflow (`ProtoFace` under the run's
+**Artifacts**); this development firmware is one file for every helmet.
 
 ### Releasing
 
@@ -170,26 +158,18 @@ Connect to **"ProtoFace"** with any BLE UART app (e.g. [Serial Bluetooth Termina
 | `help` | Show all commands |
 | `list` | List `.anim` files on SD |
 | `load <n>` | Load file by index |
-| `fallback` | Switch to the built-in fallback frame |
+| `fallback` | Switch to the built-in fallback face |
 | `play` | Resume animation |
 | `pause` | Pause animation |
 | `next` | Advance one frame |
 | `prev` | Go back one frame |
 | `bright <n>` | Set brightness 0–255 (`bright` alone shows it) |
-| `status` | Show version, model, file, frame, SD, brightness, power and mic level |
+| `status` | Show version, display, file, frame, SD, brightness, power and mic level |
 | `power` | Show USB-C PD details and the LED current budget |
-| `reload` | Rescan SD card for new files |
+| `reload` | Rescan SD card for new files; restarts if `display.json` changed |
 | `ident` | Show each panel's position on its LED chain (toggle) |
-| `map` | Show the panel map; `map left …` / `map right …` change it, `map reset` restores the default |
-
----
-
-## 🧩 Display Configs (in development, `dev` branch)
-
-ProtoFace is moving from the fixed Mk2/Mk3 layouts to JSON display configs that can describe
-NeoPixel panels, custom NeoPixel PCBs, HUB75 panels and MAX7219 matrices. See
-[`docs/display-config.md`](docs/display-config.md); presets and examples are in
-[`displays/`](displays/). The firmware does not read them yet.
+| `display` | Show the display config in use |
+| `display clear` | Remove the display config from flash and restart |
 
 ---
 
@@ -198,18 +178,24 @@ NeoPixel panels, custom NeoPixel PCBs, HUB75 panels and MAX7219 matrices. See
 Binary file format custom to this project:
 
 ```
-Header  (8 bytes):
+Header, version 1 (8 bytes) — Mk2/Mk3 files:
   [0–3]  "ANIM"       magic
   [4]    version      uint8_t   — 1
-  [5]    panels       uint8_t   — layout: 11 or 14 (must match PROTOGEN_LAYOUT)
+  [5]    panels       uint8_t   — 11 or 14 panels of 8×8
   [6–7]  (reserved)
+Header, version 2 (16 bytes) — any display:
+  [0–3]  "ANIM"       magic
+  [4]    version      uint8_t   — 2
+  [5]    (reserved)
+  [6–7]  header size  uint16_t  — 16
+  [8–11] pixel count  uint32_t
+  [12–15] layout ID   uint32_t  — CRC-32 of the panel sizes, see docs/display-config.md
 Per frame:
   [0–1]  duration_ms  uint16_t  — little-endian. TIMED: hold time.
                                   SOUND: minimum hold before a trigger is accepted
   [2]    timing_mode  uint8_t   — 0=TIMED  1=SOUND
   [3]    (reserved)
-  Then (panels × 64) × 5 bytes of LED data (704 for layout 11, 896 for layout 14),
-  in chain order — left chain first, then right chain:
+  Then pixel count × 5 bytes of LED data, in the config's panel order:
     [0]  r           uint8_t
     [1]  g           uint8_t
     [2]  b           uint8_t
@@ -236,7 +222,8 @@ it with a fast-attack / slow-decay envelope. Tune `MIC_NOISE_FLOOR`, `MIC_FULLSC
 With a HUSB238 USB-C PD board on I2C0 (GP4/GP5), the firmware asks the charger what it can
 supply at 5 V and budgets LED current to 85% of it, less 300 mA for the rest of the system.
 Each frame's draw is estimated, and only frames that would exceed the budget are dimmed
-(never below 40/255). Without the HUSB238 a 0.5 A USB supply is assumed.
+(never below the config's `min_brightness`, 40/255 by default). Without the HUSB238 the
+config's `max_ma` is used, or a 0.5 A USB supply is assumed if it has none.
 
 ---
 
@@ -247,6 +234,8 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Library | Purpose |
 |---|---|
 | `adafruit/Adafruit NeoPixel` | LED strip driver |
+| `bblanchon/ArduinoJson` | Reads `display.json` |
+| `LittleFS` | Flash copy of `display.json` (built into earlephilhower/arduino-pico) |
 | `Adafruit_HUSB238` + `adafruit/Adafruit BusIO` | USB-C PD negotiation (HUSB238) |
 | `BTstackLib` | Bluetooth LE stack (built into earlephilhower/arduino-pico) |
 | `SD` | SD card file I/O (built into earlephilhower/arduino-pico) |

@@ -1,6 +1,7 @@
 # Display config (`display.json`)
 
-> Status: draft, on the `dev` branch. Nothing in the firmware reads these files yet.
+> Status: in development on the `dev` branch. The firmware drives `ws2812` outputs from it;
+> `hub75` and `max7219` are checked but not driven yet.
 
 A display config describes a face: what the artist draws (**panels**) and how those
 pixels reach the hardware (**outputs**). The same file is used by the firmware and by the
@@ -12,15 +13,59 @@ pixels reach the hardware (**outputs**). The same file is used by the firmware a
 
 ## Where the firmware gets its config
 
-The SD card is never needed for the display config. At boot the firmware uses the first
-config it finds:
+Put the file in the root of the SD card, named `display.json`. At boot the firmware:
 
-1. A config saved in flash by an earlier Bluetooth upload.
-2. The preset baked into the firmware file (Mk2 or Mk3).
+1. Reads `/display.json` from the SD card, if there is a card and the file is there.
+2. If it differs from the copy in flash, checks the whole file. A good file is saved to
+   flash. A bad file is not used, the reason is shown by `status` / `display`, and the
+   copy already in flash stays in use.
+3. Uses the copy in flash.
 
-The AnimFile Maker sends a `display.json` over Bluetooth. The firmware checks the whole
-file before it saves it to flash and switches to it, so a bad file never replaces a working
-one. `display` shows the active config and `display reset` goes back to the baked-in preset.
+So the SD card is only needed when the config changes: once a config is in flash, the
+helmet keeps working (with the built-in "NO SD" face) without a card. To change the
+display, replace `display.json` on the card and reboot or send `reload`; the Pico restarts
+when the file changed.
+
+A Pico without a config in flash lights nothing until a `display.json` is put on the card.
+
+| Command | What it does |
+|---|---|
+| `display` | Show the active config: name, pixel count, panels, outputs |
+| `display clear` | Delete the flash copy and restart (a `display.json` on the card is copied in again) |
+| `reload` | Rescan the card; restarts if `display.json` changed |
+| `ident` | Each panel shows its position on its output's chain, to check the wiring |
+
+The file may be at most 48 KB.
+
+## Pins
+
+A config chooses the pins of its outputs. These GPIOs belong to ProtoFace itself and are
+refused anywhere in a config, so a config can never take over the SD card or other
+hardware:
+
+| GPIO | Used for |
+|---|---|
+| GP4, GP5 | USB-C PD chip (I2C) |
+| GP16–GP19 | SD card (SPI) |
+| GP26 | Microphone |
+| GP23–GP25, GP29 | Pico 2 W wireless chip |
+
+Valid pins are GP0–GP28 except those. One pin can only be used once in a config.
+
+## Writing a config
+
+The config can be written by hand, by a tool, or exported by the AnimFile Maker. A
+generator should produce a file that passes these checks, which the firmware and the
+AnimFile Maker both apply (the schema in `displays/display.schema.json` covers the shape,
+the rest needs code):
+
+- `protoface_display` is `1` and `name` is not empty.
+- Panel ids are unique; `w` and `h` are 1–256; `pixels` entries lie inside `w`×`h` and
+  don't repeat.
+- Every panel is listed by exactly one output, exactly once.
+- Pins are valid, not reserved and not shared (see [Pins](#pins)).
+- At most 4,096 pixels in total.
+- A `hub75` placement fits inside the framebuffer; every `max7219` panel is 8×8.
 
 ## Top level
 
@@ -180,6 +225,8 @@ playing files made for Mk2 and Mk3.
 
 ## Limits of the first firmware version
 
+- Only `ws2812` outputs light up. A config with `hub75` or `max7219` outputs is accepted
+  but the firmware reports "not supported by this firmware yet" and shows nothing.
 - One output type at a time (all `ws2812`, or one `hub75`, or one `max7219`).
 - At most 4,096 pixels in total.
 - At most 4 `ws2812` outputs.
