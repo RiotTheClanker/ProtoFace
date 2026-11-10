@@ -1,89 +1,43 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
+#include <LittleFS.h>
 #include <Adafruit_NeoPixel.h>
+#include <Adafruit_Protomatter.h>
 #include <BTstackLib.h>
 #include <BluetoothLock.h>
 #include <Wire.h>
 #include <Adafruit_HUSB238.h>
-#include <EEPROM.h>
+#include <vector>
+#include <algorithm>
+
+#include "pf_config.h"
 
 // extern "C" must be at file scope, not inline with #include
 extern "C" {
 #include "ble/att_server.h"
 }
 
-#define FIRMWARE_VERSION "V6.2"
+#define FIRMWARE_VERSION "V7.0-dev"
 
-// ── Model / layout selection ──────────────────────────────────────────────────
+// ── Display ───────────────────────────────────────────────────────────────────
 //
-//  Pick the helmet with PROTOGEN_LAYOUT (default 11), either here or with
-//  -DPROTOGEN_LAYOUT=14 in platformio.ini:
+//  The panels, their LED pins and wiring come from a display config
+//  (display.json, see docs/display-config.md), not from build flags.  Put it
+//  in the root of the SD card: at boot (and on 'reload') a new or changed
+//  display.json is checked and copied into the Pico's flash, so the helmet
+//  keeps working without the SD card.  A broken file on the card never
+//  replaces a working copy in flash.  With no config at all nothing lights up.
 //
-//    PROTOGEN_LAYOUT 11  →  Mk2:  nose side=6 panels, plain side=5 panels (11 total)
-//                           Left  chain: 384 LEDs  (panels 0-5  — nose side)
-//                           Right chain: 320 LEDs  (panels 6-10 — plain side)
+//  The SD card, microphone and USB-PD pins below are fixed; a display.json
+//  that tries to use them is refused (see pf::isReservedPin).
 //
-//    PROTOGEN_LAYOUT 14  →  Mk3:  7 panels per side (14 total)
-//                           Left  chain: 448 LEDs  (panels 0-6 )
-//                           Right chain: 448 LEDs  (panels 7-13)
-//
-//  The value must match the panel count stored in the .anim file header byte 5.
-//  Panels in the LED data are in logical face order (eye → mouth → nose) on
-//  both sides; see "Panel map" below for how that maps to the physical wiring.
-//
-#ifndef PROTOGEN_LAYOUT
-#  define PROTOGEN_LAYOUT 11
-#endif
-
-#define LEDS_PER_PANEL  64
-
-#if PROTOGEN_LAYOUT == 14
-    #define MODEL_NAME      "Mk3"
-    #define PANELS_LEFT     7     // panels 0-6  (left chain)
-    #define PANELS_RIGHT    7     // panels 7-13 (right chain)
-#elif PROTOGEN_LAYOUT == 11
-    #define MODEL_NAME      "Mk2"
-    #define PANELS_LEFT     6     // panels 0-5  (nose side / left chain)
-    #define PANELS_RIGHT    5     // panels 6-10 (plain side / right chain)
-#else
-    #error "PROTOGEN_LAYOUT must be 14 or 11"
-#endif
-
-#define LEDS_LEFT       (PANELS_LEFT  * LEDS_PER_PANEL)
-#define LEDS_RIGHT      (PANELS_RIGHT * LEDS_PER_PANEL)
-#define TOTAL_LEDS      (LEDS_LEFT + LEDS_RIGHT)
-
-// ── Fallback animation ────────────────────────────────────────────────────────
-// Shown when there is no SD card / start.anim.  Each model has its own frame
-// in src/fallback/, exported by the Protogen AnimFile Maker ("Export .h" tab).
-// A src/fallback_anim.h (gitignored) overrides it for local experiments.
-#if __has_include("fallback_anim.h")
-#  include "fallback_anim.h"
-#  define FALLBACK_SOURCE "fallback_anim.h"
-#elif PROTOGEN_LAYOUT == 14
-#  include "fallback/mk3_fallback.h"
-#  define FALLBACK_SOURCE "fallback/mk3_fallback.h"
-#else
-#  include "fallback/mk2_fallback.h"
-#  define FALLBACK_SOURCE "fallback/mk2_fallback.h"
-#endif
-#if defined(FALLBACK_LAYOUT) && FALLBACK_LAYOUT != PROTOGEN_LAYOUT
-#  error "The fallback header was exported for a different layout than PROTOGEN_LAYOUT — re-export it with the matching layout selected in the tool"
-#endif
-static_assert(sizeof(FALLBACK_LEDS) / sizeof(FALLBACK_LEDS[0]) == TOTAL_LEDS,
-              "Fallback header LED count does not match PROTOGEN_LAYOUT — "
-              "re-export it with the matching layout selected in the tool");
-
-// The .anim reader copies raw 5-byte records straight into LEDEntry.
-static_assert(sizeof(LEDEntry) == 5, "LEDEntry must be exactly 5 bytes");
+#define DISPLAY_FILE "/display.json"
 
 // ── Debug ─────────────────────────────────────────────────────────────────────
 #define DEBUG_BLE 0
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
-#define LED_PIN_LEFT   2
-#define LED_PIN_RIGHT  3
 #define SD_CS_PIN      17
 #define SD_MISO_PIN    16
 #define SD_SCK_PIN     18
@@ -115,21 +69,41 @@ static_assert(sizeof(LEDEntry) == 5, "LEDEntry must be exactly 5 bytes");
 #define SOUND_TRIGGER_LEVEL    128
 #define SOUND_TRIGGER_RELEASE  96
 
+
+// ── .anim file layout ─────────────────────────────────────────────────────────
+#define ANIM_V1_HEADER  8
+#define ANIM_V2_HEADER  16
+#define FRAME_HDR_SIZE  4
+
+struct LEDEntry {
+    uint8_t r, g, b;
+    uint8_t sound_mode;
+    uint8_t param;
+};
+// The .anim reader copies raw 5-byte records straight into LEDEntry.
+static_assert(sizeof(LEDEntry) == 5, "LEDEntry must be exactly 5 bytes");
+
+struct AnimFrame {
+    uint16_t duration_ms = 1000;
+    uint8_t  timing_mode = 0;
+    std::vector<LEDEntry> leds;
+};
+
 // ── NUS UUIDs ─────────────────────────────────────────────────────────────────
 #define NUS_SERVICE_UUID  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define NUS_RX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define NUS_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-// ── .anim file layout ─────────────────────────────────────────────────────────
-#define ANIM_HEADER_SIZE  8
-#define FRAME_HDR_SIZE    4
-#define FRAME_SIZE        (FRAME_HDR_SIZE + TOTAL_LEDS * (long)sizeof(LEDEntry))
 
-// ── LED strips ────────────────────────────────────────────────────────────────
-// Left  = first side  (LEDS_LEFT  LEDs, GP2)
-// Right = second side (LEDS_RIGHT LEDs, GP3)
-Adafruit_NeoPixel stripL(LEDS_LEFT,  LED_PIN_LEFT,  NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel stripR(LEDS_RIGHT, LED_PIN_RIGHT, NEO_GRB + NEO_KHZ800);
+// ── Display state ─────────────────────────────────────────────────────────────
+pf::DisplayConfig display;
+bool              haveDisplay = false;     // a usable config is loaded
+String            displayProblem;          // why not, for 'status' / 'display'
+std::vector<Adafruit_NeoPixel *> strips;   // one per ws2812 output
+Adafruit_Protomatter *matrix = nullptr;    // the hub75 output, if any
+static const uint8_t HUB75_BIT_DEPTH = 6;  // colour bits per channel on HUB75
+const pf::Output *maxOut = nullptr;        // the max7219 output, if any
+std::vector<uint8_t> maxRows;              // 8 row bytes per module, chain order
 
 // ── Playback state ────────────────────────────────────────────────────────────
 AnimFrame     currentFrame;
@@ -138,6 +112,7 @@ bool          sdReady        = false;
 unsigned long lastFrameTime  = 0;
 bool          triggerArmed   = true;
 uint8_t       brightness     = 255;   // user brightness ('bright' command)
+bool          identMode      = false; // show chain positions instead of the face
 
 // ── Power state ───────────────────────────────────────────────────────────────
 Adafruit_HUSB238 husb;
@@ -153,10 +128,14 @@ int  fileCount       = 0;
 int  fileIndex       = 0;
 int  currentFrameIdx = 0;
 int  totalFrames     = 0;
+long animHeaderSize  = ANIM_V1_HEADER;
+long frameSize       = 0;
 File animFile;
 
-AnimFrame fallbackFrame;
+AnimFrame fallbackFrame;              // built-in "NO SD" face, drawn from the config
 bool      useFallback = true;
+
+unsigned long rebootAt = 0;           // restart after a new config is saved
 
 // ── BLE state ─────────────────────────────────────────────────────────────────
 // BTstack callbacks run outside loop(), so they only hand data over through
@@ -167,7 +146,7 @@ static uint16_t                  rx_value_handle = 0;
 static volatile bool             ble_subscribed  = false;
 static volatile bool             ble_greet       = false;
 
-#define CMD_MAX 64
+#define CMD_MAX 256
 static char          pendingCmd[CMD_MAX];
 static volatile bool cmdPending = false;
 
@@ -218,6 +197,7 @@ void bleFlush() {
     }
 }
 
+
 // ── ADC / Microphone ──────────────────────────────────────────────────────────
 // The SPW2430's DC (analog) output rides on a DC bias voltage; audio is a small
 // AC swing on top of it. Reading the raw pin mostly returns that fixed bias, so
@@ -254,6 +234,7 @@ uint8_t readVolume() {
 
     return (uint8_t)(env + 0.5f);
 }
+
 
 // ── USB-C Power Delivery / LED current budget ─────────────────────────────────
 // Map the HUSB238 current enums to amps. Enumerators are ordered 0..15 / 0..3.
@@ -326,6 +307,7 @@ void initPower() {
     Serial.println(" mA (dynamic per-frame dimming)");
 }
 
+
 // ── Sound reaction ────────────────────────────────────────────────────────────
 void applySound(const LEDEntry &led, uint8_t vol,
                 uint8_t &r, uint8_t &g, uint8_t &b) {
@@ -352,187 +334,298 @@ void applySound(const LEDEntry &led, uint8_t vol,
     }
 }
 
-// ── Panel map ─────────────────────────────────────────────────────────────────
-// LED data is stored in logical face order, the order the AnimFile Maker draws
-// the panels in: on each side eye panel 1, eye panel 2, mouth panels left to
-// right, then the nose.  The map says where each logical panel sits on its LED
-// chain (0 = first panel after the Pico) and whether it is mounted flipped.
-//
-// Default wiring (chain position of each logical panel):
-//   Mk2: left  = 0 1 2 3 4 5   (eyes, mouth, nose in order; checked on a helmet)
-//        right = 3 4 0 1 2     (chain runs through the mouth first, then the eye)
-//   Mk3: left  = 6 5 4 3 2 1 0 (fully reversed, as in V6.1; not yet checked)
-//        right = 0 1 2 3 4 5 6
-//
-// If a helmet is wired differently, the 'ident' command shows each panel's
-// chain position and 'map left|right ...' changes the map without reflashing
-// (saved to flash).  See 'help'.
-#define FLIP_NONE  0
-#define FLIP_H     1   // mirrored left↔right
-#define FLIP_V     2   // mirrored top↔bottom
-#define FLIP_HV    3   // rotated 180°
 
-static uint8_t mapL[PANELS_LEFT],  flipL[PANELS_LEFT];
-static uint8_t mapR[PANELS_RIGHT], flipR[PANELS_RIGHT];
-static bool    identMode = false;   // show chain positions instead of the face
-
-#if PROTOGEN_LAYOUT == 11
-static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {0, 1, 2, 3, 4, 5};
-static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {3, 4, 0, 1, 2};
-#else
-static const uint8_t DEFAULT_MAP_L[PANELS_LEFT]  = {6, 5, 4, 3, 2, 1, 0};
-static const uint8_t DEFAULT_MAP_R[PANELS_RIGHT] = {0, 1, 2, 3, 4, 5, 6};
-#endif
-
-void defaultPanelMap() {
-    memcpy(mapL, DEFAULT_MAP_L, sizeof(mapL));
-    memcpy(mapR, DEFAULT_MAP_R, sizeof(mapR));
-    memset(flipL, FLIP_NONE, sizeof(flipL));
-    memset(flipR, FLIP_NONE, sizeof(flipR));
+// ── Display setup ─────────────────────────────────────────────────────────────
+static neoPixelType neoOrder(const std::string &order) {
+    if (order == "RGB") return NEO_RGB;
+    if (order == "RBG") return NEO_RBG;
+    if (order == "GBR") return NEO_GBR;
+    if (order == "BRG") return NEO_BRG;
+    if (order == "BGR") return NEO_BGR;
+    return NEO_GRB;
 }
 
-// Flash storage for the map (EEPROM emulation).
-#define MAP_MAGIC      0x50414D31UL   // "PAM1"
-#define MAP_EEPROM_SZ  64
-
-void savePanelMap() {
-    uint32_t magic = MAP_MAGIC;
-    int a = 0;
-    EEPROM.put(a, magic);              a += sizeof(magic);
-    EEPROM.write(a++, PROTOGEN_LAYOUT);
-    for (int i = 0; i < PANELS_LEFT;  i++) { EEPROM.write(a++, mapL[i]); EEPROM.write(a++, flipL[i]); }
-    for (int i = 0; i < PANELS_RIGHT; i++) { EEPROM.write(a++, mapR[i]); EEPROM.write(a++, flipR[i]); }
-    EEPROM.commit();
+static const char *outputTypeName(pf::OutputType t) {
+    return t == pf::OUT_HUB75 ? "hub75" : t == pf::OUT_MAX7219 ? "max7219" : "ws2812";
 }
 
-void clearSavedPanelMap() {
-    uint32_t none = 0;
-    EEPROM.put(0, none);
-    EEPROM.commit();
-}
-
-// Valid map: every chain position used exactly once, flips in range.
-static bool validMap(const uint8_t *m, const uint8_t *f, int n) {
-    bool used[8] = {false};
-    for (int i = 0; i < n; i++) {
-        if (m[i] >= n || used[m[i]] || f[i] > FLIP_HV) return false;
-        used[m[i]] = true;
-    }
-    return true;
-}
-
-bool loadPanelMap() {
-    uint32_t magic = 0;
-    int a = 0;
-    EEPROM.get(a, magic);              a += sizeof(magic);
-    if (magic != MAP_MAGIC || EEPROM.read(a++) != PROTOGEN_LAYOUT) return false;
-    uint8_t mL[PANELS_LEFT], fL[PANELS_LEFT], mR[PANELS_RIGHT], fR[PANELS_RIGHT];
-    for (int i = 0; i < PANELS_LEFT;  i++) { mL[i] = EEPROM.read(a++); fL[i] = EEPROM.read(a++); }
-    for (int i = 0; i < PANELS_RIGHT; i++) { mR[i] = EEPROM.read(a++); fR[i] = EEPROM.read(a++); }
-    if (!validMap(mL, fL, PANELS_LEFT) || !validMap(mR, fR, PANELS_RIGHT)) return false;
-    memcpy(mapL, mL, sizeof(mL)); memcpy(flipL, fL, sizeof(fL));
-    memcpy(mapR, mR, sizeof(mR)); memcpy(flipR, fR, sizeof(fR));
-    return true;
-}
-
-// LED index within a panel after applying its mounting flip.
-static inline int flipPixel(int j, uint8_t flip) {
-    int x = j & 7, y = j >> 3;
-    if (flip & FLIP_H) x = 7 - x;
-    if (flip & FLIP_V) y = 7 - y;
-    return y * 8 + x;
-}
-
-// "4 5h 3 2 1 0"  →  one chain position per logical panel, optional h/v/r flip.
-bool parsePanelMap(String args, uint8_t *m, uint8_t *f, int n) {
-    args.trim();
-    int count = 0, i = 0, len = args.length();
-    while (i < len) {
-        while (i < len && args[i] == ' ') i++;
-        if (i >= len) break;
-        if (count >= n || !isDigit(args[i])) return false;
-        int v = 0;
-        while (i < len && isDigit(args[i])) v = v * 10 + (args[i++] - '0');
-        uint8_t fl = FLIP_NONE;
-        while (i < len && args[i] != ' ') {
-            char c = args[i++];
-            if      (c == 'h') fl ^= FLIP_H;
-            else if (c == 'v') fl ^= FLIP_V;
-            else if (c == 'r') fl ^= FLIP_HV;
-            else return false;
-        }
-        m[count] = (uint8_t)v;
-        f[count] = fl;
-        count++;
-    }
-    return count == n && validMap(m, f, n);
-}
-
-String panelMapText(const uint8_t *m, const uint8_t *f, int n) {
-    String s;
-    for (int i = 0; i < n; i++) {
-        if (i) s += ' ';
-        s += String(m[i]);
-        if (f[i] == FLIP_H)  s += 'h';
-        if (f[i] == FLIP_V)  s += 'v';
-        if (f[i] == FLIP_HV) s += 'r';
-    }
+static String readFlashDisplay() {
+    File f = LittleFS.open(DISPLAY_FILE, "r");
+    if (!f) return String();
+    String s = f.readString();
+    f.close();
     return s;
 }
 
+#define MAX_DISPLAY_JSON (48 * 1024)
+
+// Copy a new or changed display.json from the SD card into flash.
+// Returns true if flash now holds a different config than before.
+bool syncDisplayFromSD() {
+    if (!sdReady || !SD.exists(DISPLAY_FILE)) return false;
+    File f = SD.open(DISPLAY_FILE);
+    if (!f) return false;
+    if (f.size() > MAX_DISPLAY_JSON) {
+        f.close();
+        displayProblem = "display.json on the SD card is too big (48 KB max)";
+        Serial.println(displayProblem);
+        bleSendLine(displayProblem);
+        return false;
+    }
+    String json = f.readString();
+    f.close();
+    if (json == readFlashDisplay()) return false;          // already in flash
+
+    pf::DisplayConfig check;
+    std::string err;
+    if (!pf::parseConfig(json.c_str(), json.length(), check, err)) {
+        String msg = String("display.json on the SD card was not used: ") + err.c_str();
+        Serial.println(msg);
+        bleSendLine(msg);
+        displayProblem = msg;
+        return false;
+    }
+    File out = LittleFS.open(DISPLAY_FILE, "w");
+    bool ok = out && out.write((const uint8_t *)json.c_str(), json.length()) == json.length();
+    if (out) out.close();
+    String msg = ok ? String("New display.json from the SD card saved: \"") + check.name.c_str() + "\""
+                    : String("display.json could not be saved to flash");
+    Serial.println(msg);
+    bleSendLine(msg);
+    return ok;
+}
+
+// Load /display.json from flash and start its outputs.
+// Start the HUB75 driver (Adafruit Protomatter).  It refreshes the panels from
+// a timer interrupt; frames are drawn into its back buffer and swapped in.
+bool startMatrix(const pf::Output &o) {
+    // Protomatter drives panels that light two rows per address (one per RGB
+    // pin set), so the scan must be half the panel height and the address
+    // lines must count those rows: 64x32 1/16 scan = 4 lines (A-D).
+    if (o.scan * 2 != o.height || (1u << o.addrPins.size()) != o.scan) {
+        displayProblem = String(o.name.c_str()) + ": this firmware drives HUB75 panels whose scan is "
+                         "half their height, with one address line per halving (e.g. 64x32 1/16 scan, "
+                         "pins A-D)";
+        return false;
+    }
+    static uint8_t rgb[6], addr[5];
+    for (size_t i = 0; i < 6; i++) rgb[i] = o.rgbPins[i];
+    for (size_t i = 0; i < o.addrPins.size(); i++) addr[i] = o.addrPins[i];
+    matrix = new Adafruit_Protomatter(o.width * o.chain, HUB75_BIT_DEPTH, 1, rgb,
+                                      (uint8_t)o.addrPins.size(), addr,
+                                      o.clkPin, o.latPin, o.oePin, true);
+    ProtomatterStatus st = matrix->begin();
+    if (st != PROTOMATTER_OK) {
+        delete matrix;
+        matrix = nullptr;
+        displayProblem = String(o.name.c_str()) + ": HUB75 driver did not start (error " + String((int)st) + ")";
+        return false;
+    }
+    matrix->fillScreen(0);
+    matrix->show();
+    return true;
+}
+
+// ── MAX7219 ───────────────────────────────────────────────────────────────────
+// Single-colour 8x8 modules on one chain, bit-banged so any three free pins
+// work.  Pixel k of the output is module k / 64, row (k % 64) / 8, column
+// k % 8; a row's byte has the leftmost column in bit 7.  Data for the module
+// farthest from the Pico is shifted out first.
+static void maxSendAll(uint8_t reg, const uint8_t *data /* one per module, or null */, uint8_t value) {
+    const int n = (int)maxOut->place.size();
+    digitalWrite(maxOut->csPin, LOW);
+    for (int m = n - 1; m >= 0; m--) {
+        uint16_t word = ((uint16_t)reg << 8) | (data ? data[m] : value);
+        for (int b = 15; b >= 0; b--) {
+            digitalWrite(maxOut->spiClkPin, LOW);
+            digitalWrite(maxOut->dinPin, (word >> b) & 1);
+            digitalWrite(maxOut->spiClkPin, HIGH);
+        }
+    }
+    digitalWrite(maxOut->spiClkPin, LOW);
+    digitalWrite(maxOut->csPin, HIGH);
+}
+
+void startMax7219(const pf::Output &o) {
+    maxOut = &o;
+    maxRows.assign(o.place.size() * 8, 0);
+    pinMode(o.dinPin, OUTPUT);
+    pinMode(o.spiClkPin, OUTPUT);
+    pinMode(o.csPin, OUTPUT);
+    digitalWrite(o.csPin, HIGH);
+    maxSendAll(0x0F, nullptr, 0);            // display test off
+    maxSendAll(0x09, nullptr, 0);            // no BCD decode
+    maxSendAll(0x0B, nullptr, 7);            // scan all 8 rows
+    maxSendAll(0x0A, nullptr, o.intensity);  // brightness 0-15
+    maxSendAll(0x0C, nullptr, 1);            // leave shutdown
+}
+
+static void maxShow() {
+    const size_t n = maxOut->place.size();
+    std::vector<uint8_t> col(n);
+    for (int row = 0; row < 8; row++) {
+        for (size_t m = 0; m < n; m++) col[m] = maxRows[m * 8 + row];
+        maxSendAll(0x01 + row, col.data(), 0);
+    }
+}
+
+static inline void maxSet(uint32_t k) {
+    maxRows[(k / 64) * 8 + (k % 64) / 8] |= 0x80 >> (k % 8);
+}
+
+void initDisplay() {
+    haveDisplay = false;
+    String json = readFlashDisplay();
+    if (json.length() == 0) {
+        if (displayProblem.length() == 0)
+            displayProblem = "no display set up: put a display.json on the SD card and restart";
+        return;
+    }
+    std::string err;
+    if (!pf::parseConfig(json.c_str(), json.length(), display, err)) {
+        displayProblem = String("display.json in flash is not usable: ") + err.c_str();
+        return;
+    }
+    for (const pf::Output &o : display.outputs) {
+        if (o.type == pf::OUT_HUB75 && !startMatrix(o)) return;
+        if (o.type == pf::OUT_MAX7219) startMax7219(o);
+    }
+    for (const pf::Output &o : display.outputs) {
+        if (o.type != pf::OUT_WS2812) continue;
+        Adafruit_NeoPixel *s = new Adafruit_NeoPixel(o.length, o.pin, neoOrder(o.colorOrder) + NEO_KHZ800);
+        s->begin();
+        s->clear();
+        s->show();
+        strips.push_back(s);
+    }
+    currentFrame.leds.assign(display.totalPixels, LEDEntry{0, 0, 0, 0, 0});
+    frameSize = FRAME_HDR_SIZE + (long)display.totalPixels * (long)sizeof(LEDEntry);
+
+    std::vector<uint8_t> rgb(display.totalPixels * 3);
+    pf::drawNoSdFace(display, rgb.data());
+    fallbackFrame.leds.resize(display.totalPixels);
+    for (uint32_t i = 0; i < display.totalPixels; i++)
+        fallbackFrame.leds[i] = LEDEntry{rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], 0, 0};
+    fallbackFrame.duration_ms = 1000;
+    fallbackFrame.timing_mode = TIMING_TIMED;
+    haveDisplay = true;
+    displayProblem = "";
+}
+
 // ── Ident pattern ─────────────────────────────────────────────────────────────
-// Each panel shows its position on its chain as a digit, drawn straight into
-// the panel's LED order (no map applied): green on the left chain, blue on the
-// right, with a red dot on the panel's first LED.  A mirrored or upside-down
-// digit means that panel needs a flip in the map.
+// Each panel shows its position on its output's chain as a digit, drawn
+// straight into the panel's LED order (rows from its first LED; no flips or
+// rotation applied): one colour per output, red dot on the panel's first LED.
+// A mirrored or upside-down digit means that panel needs a flip in the config.
 static const uint8_t DIGITS_3x5[10][5] = {
     {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1},
     {7,4,7,1,7}, {7,4,7,5,7}, {7,1,2,2,2}, {7,5,7,5,7}, {7,5,7,1,7},
 };
+static const uint8_t IDENT_RGB[4][3] = {{0, 60, 0}, {0, 0, 60}, {50, 0, 50}, {0, 50, 50}};
 
-static void drawIdentPanel(Adafruit_NeoPixel &strip, int pos, uint8_t r, uint8_t g, uint8_t b) {
-    int base = pos * LEDS_PER_PANEL;
-    for (int j = 0; j < LEDS_PER_PANEL; j++) strip.setPixelColor(base + j, 0);
-    const uint8_t *d = DIGITS_3x5[pos % 10];
-    for (int y = 0; y < 5; y++)
-        for (int x = 0; x < 3; x++)
-            if (d[y] & (4 >> x))
-                strip.setPixelColor(base + (y + 2) * 8 + (x + 3), r, g, b);
-    strip.setPixelColor(base, 60, 0, 0);
+// HUB75: each panel gets a frame and its number in the order of "place",
+// drawn where the config puts it, plus a red dot on the panel's first pixel.
+// A dot in the wrong corner means the panel needs a flip or rotate.
+void pushMatrixIdent(const pf::Output &o) {
+    matrix->fillScreen(0);
+    const uint32_t fbw = (uint32_t)o.width * o.chain;
+    for (size_t k = 0; k < o.place.size(); k++) {
+        const pf::Placement &pl = o.place[k];
+        const pf::Panel &p = display.panels[pl.panel];
+        bool turned = pl.rotate == 90 || pl.rotate == 270;
+        int w = turned ? p.h : p.w, h = turned ? p.w : p.h;
+        uint16_t c = matrix->color565(0, 0, 120);
+        matrix->drawRect(pl.x, pl.y, w, h, c);
+        int scale = min(w / 4, h / 6);
+        if (scale >= 1) {
+            const uint8_t *d = DIGITS_3x5[k % 10];
+            int x0 = pl.x + (w - 3 * scale) / 2, y0 = pl.y + (h - 5 * scale) / 2;
+            for (int y = 0; y < 5; y++)
+                for (int x = 0; x < 3; x++)
+                    if (d[y] & (4 >> x))
+                        matrix->fillRect(x0 + x * scale, y0 + y * scale, scale, scale,
+                                         matrix->color565(0, 120, 0));
+        }
+        for (uint32_t i = 0; i < o.source.size(); i++)
+            if (o.source[i] == (int32_t)p.offset) {
+                matrix->fillRect(i % fbw, i / fbw, 2, 2, matrix->color565(150, 0, 0));
+                break;
+            }
+    }
+    matrix->show();
+}
+
+// MAX7219: each module shows its position on the chain, and its first LED.
+void pushMaxIdent() {
+    std::fill(maxRows.begin(), maxRows.end(), 0);
+    for (size_t k = 0; k < maxOut->place.size(); k++) {
+        const uint8_t *d = DIGITS_3x5[k % 10];
+        for (int y = 0; y < 5; y++)
+            for (int x = 0; x < 3; x++)
+                if (d[y] & (4 >> x)) maxSet(k * 64 + (y + 2) * 8 + x + 3);
+        maxSet(k * 64);
+    }
+    maxShow();
 }
 
 void pushIdent() {
-    for (int p = 0; p < PANELS_LEFT;  p++) drawIdentPanel(stripL, p, 0, 60, 0);
-    for (int p = 0; p < PANELS_RIGHT; p++) drawIdentPanel(stripR, p, 0, 0, 60);
-    stripL.show();
-    stripR.show();
+    for (const pf::Output &o : display.outputs)
+        if (o.type == pf::OUT_HUB75) pushMatrixIdent(o);
+    if (maxOut) pushMaxIdent();
+    for (size_t oi = 0; oi < strips.size(); oi++) {
+        Adafruit_NeoPixel &strip = *strips[oi];
+        const pf::Output &o = display.outputs[oi];
+        const uint8_t *c = IDENT_RGB[oi % 4];
+        strip.clear();
+        uint32_t base = 0;
+        for (size_t k = 0; k < o.place.size(); k++) {
+            const pf::Placement &pl = o.place[k];
+            const pf::Panel &p = display.panels[pl.panel];
+            int w = (pl.rotate == 90 || pl.rotate == 270) ? p.h : p.w;
+            int h = (pl.rotate == 90 || pl.rotate == 270) ? p.w : p.h;
+            if (!p.custom && w >= 3 && h >= 5) {
+                const uint8_t *d = DIGITS_3x5[k % 10];
+                int x0 = (w - 3) / 2, y0 = (h - 5) / 2;
+                for (int y = 0; y < 5; y++)
+                    for (int x = 0; x < 3; x++)
+                        if (d[y] & (4 >> x))
+                            strip.setPixelColor(base + (y0 + y) * w + (x0 + x), c[0], c[1], c[2]);
+            } else {
+                for (uint32_t i = 1; i < p.count(); i++) strip.setPixelColor(base + i, c[0] / 4, c[1] / 4, c[2] / 4);
+            }
+            strip.setPixelColor(base, 60, 0, 0);
+            base += p.count();
+        }
+        strip.show();
+    }
 }
 
 // ── Push frame ────────────────────────────────────────────────────────────────
 // Scratch buffers hold one frame's final colours (after sound reaction) in
-// logical order, so the frame's current draw can be measured before writing.
-static uint8_t frameR[TOTAL_LEDS];
-static uint8_t frameG[TOTAL_LEDS];
-static uint8_t frameB[TOTAL_LEDS];
+// frame order, so the frame's current draw can be measured before writing.
+static std::vector<uint8_t> frameRGB;
 
 void pushFrame(const LEDEntry *leds, uint8_t vol) {
+    const uint32_t n = display.totalPixels;
+    if (frameRGB.size() != n * 3) frameRGB.assign(n * 3, 0);
+
     // ── Pass 1: resolve final colours (sound + user brightness), sum levels ───
     uint32_t sumCh = 0;
-    for (int i = 0; i < TOTAL_LEDS; i++) {
+    for (uint32_t i = 0; i < n; i++) {
         uint8_t r, g, b;
         applySound(leds[i], vol, r, g, b);
         r = (uint16_t)r * brightness / 255;
         g = (uint16_t)g * brightness / 255;
         b = (uint16_t)b * brightness / 255;
-        frameR[i] = r; frameG[i] = g; frameB[i] = b;
+        frameRGB[i * 3] = r; frameRGB[i * 3 + 1] = g; frameRGB[i * 3 + 2] = b;
         sumCh += (uint32_t)r + g + b;
     }
 
     // ── Estimate this frame's current draw ────────────────────────────────────
     //   dynamic   = (sum of channel levels / 255) × per-channel full current
     //   quiescent = fixed per-LED controller draw (cannot be dimmed away)
-    float dynMA       = (float)sumCh / 255.0f * (LED_FULL_WHITE_MA / 3.0f);
-    float quiescentMA = (float)TOTAL_LEDS * LED_QUIESCENT_MA;
+    float dynMA       = (float)sumCh / 255.0f * (display.limits.maPerLedWhite / 3.0f);
+    float quiescentMA = (float)n * display.limits.maPerLedIdle;
 
     // ── Only dim if this frame would exceed the power budget ──────────────────
     uint16_t scale = 255;
@@ -540,35 +633,60 @@ void pushFrame(const LEDEntry *leds, uint8_t vol) {
         float avail = ledBudgetMA - quiescentMA;   // current left for the colour part
         if (avail < 0) avail = 0;
         int s = (int)(avail / dynMA * 255.0f);
-        if (s < LED_MIN_BRIGHTNESS) s = LED_MIN_BRIGHTNESS;
+        if (s < display.limits.minBrightness) s = display.limits.minBrightness;
         if (s > 255) s = 255;
         scale = (uint16_t)s;
     }
     lastPowerScale = (uint8_t)scale;
 
-    // ── Pass 2: write to strips through the panel map, scale applied ──────────
-    for (int l = 0; l < PANELS_LEFT; l++) {
-        int dst = mapL[l] * LEDS_PER_PANEL;
-        for (int j = 0; j < LEDS_PER_PANEL; j++) {
-            int src = l * LEDS_PER_PANEL + j;
-            stripL.setPixelColor(dst + flipPixel(j, flipL[l]),
-                                 (uint16_t)frameR[src] * scale / 255,
-                                 (uint16_t)frameG[src] * scale / 255,
-                                 (uint16_t)frameB[src] * scale / 255);
+    // ── Pass 2: write each output in its physical order, scale applied ────────
+    for (size_t oi = 0; oi < strips.size(); oi++) {
+        Adafruit_NeoPixel &strip = *strips[oi];
+        const std::vector<int32_t> &src = display.outputs[oi].source;
+        for (uint32_t k = 0; k < src.size(); k++) {
+            int32_t i = src[k];
+            if (i < 0) { strip.setPixelColor(k, 0); continue; }
+            strip.setPixelColor(k, (uint16_t)frameRGB[i * 3]     * scale / 255,
+                                   (uint16_t)frameRGB[i * 3 + 1] * scale / 255,
+                                   (uint16_t)frameRGB[i * 3 + 2] * scale / 255);
         }
+        strip.show();
     }
-    for (int l = 0; l < PANELS_RIGHT; l++) {
-        int dst = mapR[l] * LEDS_PER_PANEL;
-        for (int j = 0; j < LEDS_PER_PANEL; j++) {
-            int src = LEDS_LEFT + l * LEDS_PER_PANEL + j;
-            stripR.setPixelColor(dst + flipPixel(j, flipR[l]),
-                                 (uint16_t)frameR[src] * scale / 255,
-                                 (uint16_t)frameG[src] * scale / 255,
-                                 (uint16_t)frameB[src] * scale / 255);
+    if (matrix) {
+        for (const pf::Output &o : display.outputs) {
+            if (o.type != pf::OUT_HUB75) continue;
+            const uint32_t fbw = (uint32_t)o.width * o.chain;
+            for (uint32_t k = 0; k < o.source.size(); k++) {
+                int32_t i = o.source[k];
+                uint16_t c = 0;
+                if (i >= 0)
+                    c = matrix->color565((uint16_t)frameRGB[i * 3]     * scale / 255,
+                                         (uint16_t)frameRGB[i * 3 + 1] * scale / 255,
+                                         (uint16_t)frameRGB[i * 3 + 2] * scale / 255);
+                matrix->drawPixel(k % fbw, k / fbw, c);
+            }
         }
+        matrix->show();
     }
-    stripL.show();
-    stripR.show();
+    if (maxOut) {
+        // On/off per LED from the colour before power limiting: the modules'
+        // current is set by "intensity", not by the frame.
+        std::fill(maxRows.begin(), maxRows.end(), 0);
+        const std::vector<int32_t> &src = maxOut->source;
+        for (uint32_t k = 0; k < src.size(); k++) {
+            int32_t i = src[k];
+            if (i < 0) continue;
+            uint8_t v = max(frameRGB[i * 3], max(frameRGB[i * 3 + 1], frameRGB[i * 3 + 2]));
+            if (v >= maxOut->threshold && v > 0) maxSet(k);
+        }
+        maxShow();
+    }
+}
+
+void blankOutputs() {
+    for (Adafruit_NeoPixel *s : strips) { s->clear(); s->show(); }
+    if (matrix) { matrix->fillScreen(0); matrix->show(); }
+    if (maxOut) { std::fill(maxRows.begin(), maxRows.end(), 0); maxShow(); }
 }
 
 // ── SD helpers ────────────────────────────────────────────────────────────────
@@ -596,43 +714,66 @@ void scanSDFiles() {
     root.close();
 }
 
+
 bool openFile(int idx) {
-    if (idx < 0 || idx >= fileCount) return false;
+    if (!haveDisplay || idx < 0 || idx >= fileCount) return false;
     if (animFile) animFile.close();
     String path = "/" + String(fileList[idx]);
     animFile = SD.open(path.c_str());
     if (!animFile) return false;
 
-    // Validate header: magic + layout panel count must match compile-time layout
-    uint8_t hdr[ANIM_HEADER_SIZE];
-    if (animFile.read(hdr, ANIM_HEADER_SIZE) != ANIM_HEADER_SIZE ||
-        memcmp(hdr, "ANIM", 4) != 0) {
+    // Header: version 1 = 11/14-panel Mk2/Mk3 file, version 2 = any display
+    uint8_t hdr[ANIM_V2_HEADER];
+    if (animFile.read(hdr, ANIM_V1_HEADER) != ANIM_V1_HEADER || memcmp(hdr, "ANIM", 4) != 0) {
         bleSendLine("ERROR: not a valid .anim file");
         animFile.close();
         return false;
     }
-    uint8_t filePanels = hdr[5];
-    if (filePanels != PROTOGEN_LAYOUT) {
-        bleSendLine("ERROR: file layout " + String(filePanels) +
-                    " != build layout " + String(PROTOGEN_LAYOUT));
+    bool fits;
+    if (hdr[4] == 1) {
+        fits = display.v1Compatible(hdr[5]);
+        animHeaderSize = ANIM_V1_HEADER;
+        if (!fits)
+            bleSendLine("ERROR: file is for a " + String(hdr[5]) + "-panel Mk" +
+                        String(hdr[5] == 14 ? 3 : 2) + " helmet, not \"" + display.name.c_str() + "\"");
+    } else if (hdr[4] == 2) {
+        if (animFile.read(hdr + ANIM_V1_HEADER, ANIM_V2_HEADER - ANIM_V1_HEADER) !=
+            ANIM_V2_HEADER - ANIM_V1_HEADER) {
+            bleSendLine("ERROR: .anim header is cut short");
+            animFile.close();
+            return false;
+        }
+        uint16_t hsize  = hdr[6] | (hdr[7] << 8);
+        uint32_t pixels = hdr[8] | (hdr[9] << 8) | ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
+        uint32_t layout = hdr[12] | (hdr[13] << 8) | ((uint32_t)hdr[14] << 16) | ((uint32_t)hdr[15] << 24);
+        animHeaderSize = hsize;
+        fits = hsize >= ANIM_V2_HEADER && pixels == display.totalPixels && layout == display.layoutId();
+        if (!fits)
+            bleSendLine("ERROR: file is for a different display (" + String(pixels) + " pixels, layout " +
+                        String(layout, HEX) + "), not \"" + display.name.c_str() + "\"");
+    } else {
+        bleSendLine("ERROR: .anim version " + String(hdr[4]) + " is newer than this firmware");
+        fits = false;
+    }
+    if (!fits) {
         animFile.close();
         return false;
     }
-    totalFrames = (animFile.size() - ANIM_HEADER_SIZE) / FRAME_SIZE;
+    totalFrames = (animFile.size() - animHeaderSize) / frameSize;
     if (totalFrames <= 0) {
         bleSendLine("ERROR: file has no complete frames");
         animFile.close();
         return false;
     }
-    return true;
+    return animFile.seek(animHeaderSize);
 }
 
 bool readNextFrame() {
     if (!animFile) return false;
     uint8_t fhdr[FRAME_HDR_SIZE];
     if (animFile.read(fhdr, FRAME_HDR_SIZE) != FRAME_HDR_SIZE) return false;
-    const size_t ledBytes = sizeof(currentFrame.leds);
-    if ((size_t)animFile.read((uint8_t *)currentFrame.leds, ledBytes) != ledBytes)
+    const size_t ledBytes = currentFrame.leds.size() * sizeof(LEDEntry);
+    if ((size_t)animFile.read((uint8_t *)currentFrame.leds.data(), ledBytes) != ledBytes)
         return false;
     currentFrame.duration_ms = fhdr[0] | (fhdr[1] << 8);
     currentFrame.timing_mode = fhdr[2];
@@ -641,7 +782,7 @@ bool readNextFrame() {
 
 bool seekFrame(int target) {
     if (!animFile || target < 0 || target >= totalFrames) return false;
-    if (!animFile.seek(ANIM_HEADER_SIZE + (long)target * FRAME_SIZE)) return false;
+    if (!animFile.seek(animHeaderSize + (long)target * frameSize)) return false;
     return readNextFrame();
 }
 
@@ -684,14 +825,151 @@ bool stepFrame(int delta) {
     return true;
 }
 
+// List the SD card's animations and load start.anim if it is there.
+void startSD() {
+    if (!sdReady) {
+        Serial.println("SD not found — fallback only");
+        return;
+    }
+    scanSDFiles();
+    Serial.print(fileCount); Serial.println(" .anim files found");
+    if (!haveDisplay) return;
+    for (int i = 0; i < fileCount; i++) {
+        if (strcasecmp(fileList[i], "start.anim") != 0) continue;
+        if (loadFile(i)) {
+            Serial.print("Auto-loaded: "); Serial.print(fileList[i]);
+            Serial.print("  ("); Serial.print(totalFrames); Serial.println(" frames)");
+        } else {
+            Serial.println("start.anim could not be loaded — using fallback");
+        }
+        return;
+    }
+    Serial.println("start.anim not found — using fallback");
+}
+
+// ── Display config commands ───────────────────────────────────────────────────
+void sendDisplayInfo() {
+    bleSendLine("── Display ──────────────────────");
+    if (!haveDisplay) {
+        bleSendLine(displayProblem);
+        if (display.name.empty()) { bleSendLine("─────────────────────────────────"); return; }
+    }
+    bleSendLine(String("Name:    ") + display.name.c_str());
+    bleSendLine("Panels:  " + String((unsigned)display.panels.size()) + "  (" +
+                String(display.totalPixels) + " pixels, layout " + String(display.layoutId(), HEX) + ")");
+    for (const pf::Output &o : display.outputs) {
+        String line = String("Output:  ") + o.name.c_str() + "  " + outputTypeName(o.type);
+        if (o.type == pf::OUT_WS2812) line += " GP" + String(o.pin) + " " + o.colorOrder.c_str();
+        if (o.type == pf::OUT_HUB75)
+            line += " " + String(o.width) + "x" + String(o.height) + " x" + String(o.chain) +
+                    " 1/" + String(o.scan) + " scan";
+        if (o.type == pf::OUT_MAX7219)
+            line += " din GP" + String(o.dinPin) + " clk GP" + String(o.spiClkPin) + " cs GP" + String(o.csPin);
+        line += "  " + String(o.length) + " LEDs, " + String((unsigned)o.place.size()) + " panels";
+        bleSendLine(line);
+    }
+    bleSendLine("─────────────────────────────────");
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 void handleCommand(const char *cmd) {
-    String s = String(cmd);
-    s.trim();
+    String raw = String(cmd);
+    raw.trim();
+    if (raw.length() == 0) return;
+
+    String s = raw;
     s.toLowerCase();
 
-    if (s.length() == 0) return;
-
+    if (s == "display") {
+        sendDisplayInfo();
+        return;
+    }
+    if (s == "display clear") {
+        LittleFS.remove(DISPLAY_FILE);
+        bleSendLine("Display config removed from flash (a display.json on the SD card is copied "
+                    "in again at boot). Restarting...");
+        rebootAt = millis() + 1000;
+        return;
+    }
+    if (s == "help") {
+        bleSendLine("── Commands ─────────────────────");
+        bleSendLine("  list          list .anim files on SD");
+        bleSendLine("  load <n>      load file by index");
+        bleSendLine("  fallback      show built-in fallback");
+        bleSendLine("  play          resume animation");
+        bleSendLine("  pause         pause animation");
+        bleSendLine("  next          advance one frame");
+        bleSendLine("  prev          go back one frame");
+        bleSendLine("  bright <n>    brightness 0-255");
+        bleSendLine("  status        show current state");
+        bleSendLine("  power         show USB-C PD power info");
+        bleSendLine("  reload        rescan SD card (and its display.json)");
+        bleSendLine("  ident         show each panel's chain position");
+        bleSendLine("  display       show the display config");
+        bleSendLine("  display clear remove it from flash");
+        bleSendLine("  help          show this message");
+        bleSendLine("─────────────────────────────────");
+        return;
+    }
+    if (s == "status") {
+        bleSendLine("── Status ───────────────────────");
+        bleSendLine("ProtoFace " FIRMWARE_VERSION);
+        bleSendLine(haveDisplay ? String("Display: ") + display.name.c_str() + "  (" +
+                                  String(display.totalPixels) + " pixels)"
+                                : "Display: " + displayProblem);
+        if (haveDisplay) {
+            bleSendLine(useFallback ? String("Source: built-in NO SD face")
+                                    : "Source: " + String(fileList[fileIndex]));
+            bleSendLine(playing ? "State:  Playing" : "State:  Paused");
+            if (!useFallback)
+                bleSendLine("Frame:  " + String(currentFrameIdx + 1) + "/" + String(totalFrames));
+        }
+        bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
+        bleSendLine("Bright: " + String(brightness) + "/255  (power limit " +
+                    String(lastPowerScale) + "/255)");
+        bleSendLine(String("Power:  ") + (pdReady ? "PD " : "USB ") + String(pdVolts) +
+                    "V " + String(availableAmps, 2) + "A");
+        bleSendLine("Volume: " + String(readVolume()) + "/255");
+        bleSendLine("─────────────────────────────────");
+        return;
+    }
+    if (s == "power") {
+        bleSendLine("── Power ────────────────────────");
+        bleSendLine(pdReady ? "Source:    USB-C PD (HUSB238)"
+                            : "Source:    USB / no PD chip");
+        bleSendLine("Voltage:   " + String(pdVolts) + "V");
+        bleSendLine("Available: " + String(availableAmps, 2) + "A");
+        bleSendLine("LED budget: " + String((int)ledBudgetMA) + "mA  (full white = " +
+                    String((int)(display.totalPixels * display.limits.maPerLedWhite)) + "mA)");
+        bleSendLine("Frame dimming: " + String(lastPowerScale) + "/255");
+        bleSendLine("─────────────────────────────────");
+        return;
+    }
+    if (s == "bright" || s.startsWith("bright ")) {
+        String arg = s.substring(6);
+        arg.trim();
+        if (arg.length() > 0) brightness = (uint8_t)constrain(arg.toInt(), 0, 255);
+        bleSendLine("Brightness: " + String(brightness) + "/255");
+        return;
+    }
+    if (s == "reload") {
+        // Retry the mount if it failed at boot so a card can be re-seated or
+        // wiring fixed without a power cycle. Each attempt re-drives CS.
+        if (!sdReady) sdReady = SD.begin(SD_CS_PIN);
+        if (sdReady && syncDisplayFromSD()) {
+            bleSendLine("Restarting to use the new display...");
+            rebootAt = millis() + 1000;
+        } else if (sdReady) {
+            // Rescanning can reorder the list, so drop back to the fallback
+            // rather than keep playing a file whose index may now be stale.
+            if (!useFallback) switchToFallback("Reloading — showing fallback");
+            scanSDFiles();
+            bleSendLine("SD rescan: " + String(fileCount) + " files found");
+        } else {
+            bleSendLine("SD still not mounted");
+        }
+        return;
+    }
     if (s == "list") {
         if (!sdReady)       { bleSendLine("ERROR: SD not mounted"); return; }
         if (fileCount == 0) { bleSendLine("No .anim files on SD");  return; }
@@ -702,8 +980,15 @@ void handleCommand(const char *cmd) {
             bleSendLine(line);
         }
         bleSendLine("─────────────────────────────────");
+        return;
     }
-    else if (s.startsWith("load ")) {
+
+    // Everything below needs a display
+    if (!haveDisplay) {
+        bleSendLine("No display set up: " + displayProblem);
+        return;
+    }
+    if (s.startsWith("load ")) {
         String arg = s.substring(5);
         arg.trim();
         int idx = arg.toInt();
@@ -730,112 +1015,12 @@ void handleCommand(const char *cmd) {
         if (stepFrame(s == "next" ? 1 : -1))
             bleSendLine("Frame " + String(currentFrameIdx + 1) + "/" + String(totalFrames));
     }
-    else if (s.startsWith("bright")) {
-        String arg = s.substring(6);
-        arg.trim();
-        if (arg.length() > 0) {
-            brightness = (uint8_t)constrain(arg.toInt(), 0, 255);
-        }
-        bleSendLine("Brightness: " + String(brightness) + "/255");
-    }
-    else if (s == "status") {
-        bleSendLine("── Status ───────────────────────");
-        bleSendLine("ProtoFace " FIRMWARE_VERSION "  (" MODEL_NAME ")");
-        bleSendLine(useFallback ? String("Source: FALLBACK (" FALLBACK_SOURCE ")")
-                                : "Source: " + String(fileList[fileIndex]));
-        bleSendLine(playing ? "State:  Playing" : "State:  Paused");
-        if (!useFallback)
-            bleSendLine("Frame:  " + String(currentFrameIdx + 1) + "/" + String(totalFrames));
-        bleSendLine(sdReady ? "SD:     Mounted" : "SD:     Not mounted");
-        bleSendLine("Layout: " + String(PROTOGEN_LAYOUT) + "-panel  (L=" + String(LEDS_LEFT) +
-                    " R=" + String(LEDS_RIGHT) + " LEDs)");
-        bleSendLine("Bright: " + String(brightness) + "/255  (power limit " +
-                    String(lastPowerScale) + "/255)");
-        bleSendLine(String("Power:  ") + (pdReady ? "PD " : "USB ") + String(pdVolts) +
-                    "V " + String(availableAmps, 2) + "A");
-        bleSendLine("Volume: " + String(readVolume()) + "/255");
-        bleSendLine("─────────────────────────────────");
-    }
-    else if (s == "power") {
-        bleSendLine("── Power ────────────────────────");
-        bleSendLine(pdReady ? "Source:    USB-C PD (HUSB238)"
-                            : "Source:    USB / no PD chip");
-        bleSendLine("Voltage:   " + String(pdVolts) + "V");
-        bleSendLine("Available: " + String(availableAmps, 2) + "A");
-        bleSendLine("LED budget: " + String((int)ledBudgetMA) + "mA  (full white = " +
-                    String((int)(TOTAL_LEDS * LED_FULL_WHITE_MA)) + "mA)");
-        bleSendLine("Frame dimming: " + String(lastPowerScale) + "/255");
-        bleSendLine("─────────────────────────────────");
-    }
-    else if (s == "reload") {
-        // Retry the mount if it failed at boot so a card can be re-seated or
-        // wiring fixed without a power cycle. Each attempt re-drives CS.
-        if (!sdReady) sdReady = SD.begin(SD_CS_PIN);
-        if (sdReady) {
-            // Rescanning can reorder the list, so drop back to the fallback
-            // rather than keep playing a file whose index may now be stale.
-            if (!useFallback) switchToFallback("Reloading — showing fallback");
-            scanSDFiles();
-            bleSendLine("SD rescan: " + String(fileCount) + " files found");
-        } else {
-            bleSendLine("SD still not mounted");
-        }
-    }
     else if (s == "ident") {
         identMode = !identMode;
-        bleSendLine(identMode ? "Ident ON: each panel shows its chain position "
-                                "(green=left chain, blue=right, red dot=first LED). "
+        bleSendLine(identMode ? "Ident ON: each panel shows its position on its output's chain "
+                                "(one colour per output, red dot = first LED). "
                                 "'ident' again to go back."
                               : "Ident OFF");
-    }
-    else if (s == "map") {
-        bleSendLine("── Panel map ────────────────────");
-        bleSendLine("Order: eye1 eye2 mouth1.. (nose), as drawn in the tool");
-        bleSendLine("left:  " + panelMapText(mapL, flipL, PANELS_LEFT));
-        bleSendLine("right: " + panelMapText(mapR, flipR, PANELS_RIGHT));
-        bleSendLine("─────────────────────────────────");
-    }
-    else if (s == "map reset") {
-        defaultPanelMap();
-        clearSavedPanelMap();
-        bleSendLine("Panel map reset to default");
-        bleSendLine("left:  " + panelMapText(mapL, flipL, PANELS_LEFT));
-        bleSendLine("right: " + panelMapText(mapR, flipR, PANELS_RIGHT));
-    }
-    else if (s.startsWith("map left ") || s.startsWith("map right ")) {
-        bool left = s.startsWith("map left ");
-        int  n    = left ? PANELS_LEFT : PANELS_RIGHT;
-        uint8_t m[8], f[8];
-        if (!parsePanelMap(s.substring(left ? 9 : 10), m, f, n)) {
-            bleSendLine("ERROR: give " + String(n) + " chain positions 0-" + String(n - 1) +
-                        ", each once (add h/v/r to flip a panel)");
-            return;
-        }
-        memcpy(left ? mapL : mapR, m, n);
-        memcpy(left ? flipL : flipR, f, n);
-        savePanelMap();
-        bleSendLine(String(left ? "left:  " : "right: ") +
-                    panelMapText(m, f, n) + "  (saved)");
-    }
-    else if (s == "help") {
-        bleSendLine("── Commands ─────────────────────");
-        bleSendLine("  list          list .anim files on SD");
-        bleSendLine("  load <n>      load file by index");
-        bleSendLine("  fallback      show built-in fallback");
-        bleSendLine("  play          resume animation");
-        bleSendLine("  pause         pause animation");
-        bleSendLine("  next          advance one frame");
-        bleSendLine("  prev          go back one frame");
-        bleSendLine("  bright <n>    brightness 0-255");
-        bleSendLine("  status        show current state");
-        bleSendLine("  power         show USB-C PD power info");
-        bleSendLine("  reload        rescan SD card");
-        bleSendLine("  ident         show each panel's chain position");
-        bleSendLine("  map           show the panel map");
-        bleSendLine("  map left|right <pos..>  set it, e.g. map right 3 4 0 1 2");
-        bleSendLine("  map reset     back to the default map");
-        bleSendLine("  help          show this message");
-        bleSendLine("─────────────────────────────────");
     }
     else {
         bleSendLine("Unknown: '" + s + "' — type 'help'");
@@ -894,69 +1079,41 @@ void serviceBle() {
     bleFlush();
 }
 
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     delay(1000);
 
-    Serial.println("ProtoFace " FIRMWARE_VERSION "  (" MODEL_NAME ")");
-    Serial.print("Build layout: ");
-    Serial.print(PROTOGEN_LAYOUT);
-    Serial.print("-panel  TOTAL_LEDS=");
-    Serial.print(TOTAL_LEDS);
-    Serial.print("  left=");
-    Serial.print(LEDS_LEFT);
-    Serial.print("  right=");
-    Serial.println(LEDS_RIGHT);
-
+    Serial.println("ProtoFace " FIRMWARE_VERSION);
     analogReadResolution(12);
 
-    defaultPanelMap();
-    EEPROM.begin(MAP_EEPROM_SZ);
-    Serial.println(loadPanelMap() ? "Panel map: saved" : "Panel map: default");
-
-    stripL.begin(); stripR.begin();
-    stripL.clear(); stripL.show();
-    stripR.clear(); stripR.show();
-
-    // Negotiate USB-C PD (5V) and budget LED current to what is available.
-    initPower();
-
-    fallbackFrame = makeFallbackFrame();
-    useFallback   = true;
-    playing       = true;
-    Serial.println("Fallback active (" FALLBACK_SOURCE ")");
+    if (!LittleFS.begin()) Serial.println("Flash file system not available");
 
     // Explicitly configure SPI0 pins so the mount does not depend on the
-    // core's default mapping. Left LED/right LED are on GP2/GP3; SD uses SPI0.
+    // core's default mapping.  The SD card is read first: it may carry a new
+    // display.json.
     SPI.setRX(SD_MISO_PIN);
     SPI.setTX(SD_MOSI_PIN);
     SPI.setSCK(SD_SCK_PIN);
-
     sdReady = SD.begin(SD_CS_PIN);
-    if (sdReady) {
-        Serial.println("SD mounted");
-        scanSDFiles();
-        Serial.print(fileCount); Serial.println(" .anim files found");
-
-        int startIndex = -1;
-        for (int i = 0; i < fileCount; i++) {
-            if (strcasecmp(fileList[i], "start.anim") == 0) {
-                startIndex = i;
-                break;
-            }
-        }
-        if (startIndex == -1) {
-            Serial.println("start.anim not found — using fallback");
-        } else if (loadFile(startIndex)) {
-            Serial.print("Auto-loaded: "); Serial.print(fileList[startIndex]);
-            Serial.print("  ("); Serial.print(totalFrames); Serial.println(" frames)");
-        } else {
-            Serial.println("start.anim could not be loaded — using fallback");
-        }
+    Serial.println(sdReady ? "SD mounted" : "SD not mounted");
+    syncDisplayFromSD();
+    initDisplay();
+    if (haveDisplay) {
+        Serial.print("Display: "); Serial.print(display.name.c_str());
+        Serial.print("  "); Serial.print(display.totalPixels); Serial.println(" pixels");
     } else {
-        Serial.println("SD not found — fallback only");
+        Serial.println(displayProblem);
     }
+
+    // Negotiate USB-C PD (5V) and budget LED current to what is available.
+    initPower();
+    if (!pdReady && display.limits.maxMA > 0) ledBudgetMA = display.limits.maxMA;
+
+    useFallback = true;
+    playing     = true;
+    startSD();
 
     BTstack.setBLEDeviceConnectedCallback(bleConnected);
     BTstack.setBLEDeviceDisconnectedCallback(bleDisconnected);
@@ -980,11 +1137,17 @@ void loop() {
     BTstack.loop();
     serviceBle();
 
+    if (rebootAt && (long)(millis() - rebootAt) >= 0) {
+        blankOutputs();
+        rp2040.reboot();
+    }
+    if (!haveDisplay) { delay(5); return; }
+
     uint8_t vol = readVolume();
 
     const AnimFrame &f = useFallback ? fallbackFrame : currentFrame;
     if (identMode) pushIdent();
-    else           pushFrame(f.leds, vol);
+    else           pushFrame(f.leds.data(), vol);
 
     if (!playing || useFallback) { delay(5); return; }
 
