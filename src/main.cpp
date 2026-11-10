@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <Adafruit_HUSB238.h>
 #include <vector>
+#include <algorithm>
 
 #include "pf_config.h"
 
@@ -101,6 +102,8 @@ String            displayProblem;          // why not, for 'status' / 'display'
 std::vector<Adafruit_NeoPixel *> strips;   // one per ws2812 output
 Adafruit_Protomatter *matrix = nullptr;    // the hub75 output, if any
 static const uint8_t HUB75_BIT_DEPTH = 6;  // colour bits per channel on HUB75
+const pf::Output *maxOut = nullptr;        // the max7219 output, if any
+std::vector<uint8_t> maxRows;              // 8 row bytes per module, chain order
 
 // ── Playback state ────────────────────────────────────────────────────────────
 AnimFrame     currentFrame;
@@ -423,6 +426,53 @@ bool startMatrix(const pf::Output &o) {
     return true;
 }
 
+// ── MAX7219 ───────────────────────────────────────────────────────────────────
+// Single-colour 8x8 modules on one chain, bit-banged so any three free pins
+// work.  Pixel k of the output is module k / 64, row (k % 64) / 8, column
+// k % 8; a row's byte has the leftmost column in bit 7.  Data for the module
+// farthest from the Pico is shifted out first.
+static void maxSendAll(uint8_t reg, const uint8_t *data /* one per module, or null */, uint8_t value) {
+    const int n = (int)maxOut->place.size();
+    digitalWrite(maxOut->csPin, LOW);
+    for (int m = n - 1; m >= 0; m--) {
+        uint16_t word = ((uint16_t)reg << 8) | (data ? data[m] : value);
+        for (int b = 15; b >= 0; b--) {
+            digitalWrite(maxOut->spiClkPin, LOW);
+            digitalWrite(maxOut->dinPin, (word >> b) & 1);
+            digitalWrite(maxOut->spiClkPin, HIGH);
+        }
+    }
+    digitalWrite(maxOut->spiClkPin, LOW);
+    digitalWrite(maxOut->csPin, HIGH);
+}
+
+void startMax7219(const pf::Output &o) {
+    maxOut = &o;
+    maxRows.assign(o.place.size() * 8, 0);
+    pinMode(o.dinPin, OUTPUT);
+    pinMode(o.spiClkPin, OUTPUT);
+    pinMode(o.csPin, OUTPUT);
+    digitalWrite(o.csPin, HIGH);
+    maxSendAll(0x0F, nullptr, 0);            // display test off
+    maxSendAll(0x09, nullptr, 0);            // no BCD decode
+    maxSendAll(0x0B, nullptr, 7);            // scan all 8 rows
+    maxSendAll(0x0A, nullptr, o.intensity);  // brightness 0-15
+    maxSendAll(0x0C, nullptr, 1);            // leave shutdown
+}
+
+static void maxShow() {
+    const size_t n = maxOut->place.size();
+    std::vector<uint8_t> col(n);
+    for (int row = 0; row < 8; row++) {
+        for (size_t m = 0; m < n; m++) col[m] = maxRows[m * 8 + row];
+        maxSendAll(0x01 + row, col.data(), 0);
+    }
+}
+
+static inline void maxSet(uint32_t k) {
+    maxRows[(k / 64) * 8 + (k % 64) / 8] |= 0x80 >> (k % 8);
+}
+
 void initDisplay() {
     haveDisplay = false;
     String json = readFlashDisplay();
@@ -437,12 +487,8 @@ void initDisplay() {
         return;
     }
     for (const pf::Output &o : display.outputs) {
-        if (o.type == pf::OUT_MAX7219) {
-            displayProblem = String(outputTypeName(o.type)) +
-                             " outputs are not supported by this firmware yet";
-            return;
-        }
         if (o.type == pf::OUT_HUB75 && !startMatrix(o)) return;
+        if (o.type == pf::OUT_MAX7219) startMax7219(o);
     }
     for (const pf::Output &o : display.outputs) {
         if (o.type != pf::OUT_WS2812) continue;
@@ -509,9 +555,23 @@ void pushMatrixIdent(const pf::Output &o) {
     matrix->show();
 }
 
+// MAX7219: each module shows its position on the chain, and its first LED.
+void pushMaxIdent() {
+    std::fill(maxRows.begin(), maxRows.end(), 0);
+    for (size_t k = 0; k < maxOut->place.size(); k++) {
+        const uint8_t *d = DIGITS_3x5[k % 10];
+        for (int y = 0; y < 5; y++)
+            for (int x = 0; x < 3; x++)
+                if (d[y] & (4 >> x)) maxSet(k * 64 + (y + 2) * 8 + x + 3);
+        maxSet(k * 64);
+    }
+    maxShow();
+}
+
 void pushIdent() {
     for (const pf::Output &o : display.outputs)
         if (o.type == pf::OUT_HUB75) pushMatrixIdent(o);
+    if (maxOut) pushMaxIdent();
     for (size_t oi = 0; oi < strips.size(); oi++) {
         Adafruit_NeoPixel &strip = *strips[oi];
         const pf::Output &o = display.outputs[oi];
@@ -608,11 +668,25 @@ void pushFrame(const LEDEntry *leds, uint8_t vol) {
         }
         matrix->show();
     }
+    if (maxOut) {
+        // On/off per LED from the colour before power limiting: the modules'
+        // current is set by "intensity", not by the frame.
+        std::fill(maxRows.begin(), maxRows.end(), 0);
+        const std::vector<int32_t> &src = maxOut->source;
+        for (uint32_t k = 0; k < src.size(); k++) {
+            int32_t i = src[k];
+            if (i < 0) continue;
+            uint8_t v = max(frameRGB[i * 3], max(frameRGB[i * 3 + 1], frameRGB[i * 3 + 2]));
+            if (v >= maxOut->threshold && v > 0) maxSet(k);
+        }
+        maxShow();
+    }
 }
 
 void blankOutputs() {
     for (Adafruit_NeoPixel *s : strips) { s->clear(); s->show(); }
     if (matrix) { matrix->fillScreen(0); matrix->show(); }
+    if (maxOut) { std::fill(maxRows.begin(), maxRows.end(), 0); maxShow(); }
 }
 
 // ── SD helpers ────────────────────────────────────────────────────────────────
@@ -789,6 +863,8 @@ void sendDisplayInfo() {
         if (o.type == pf::OUT_HUB75)
             line += " " + String(o.width) + "x" + String(o.height) + " x" + String(o.chain) +
                     " 1/" + String(o.scan) + " scan";
+        if (o.type == pf::OUT_MAX7219)
+            line += " din GP" + String(o.dinPin) + " clk GP" + String(o.spiClkPin) + " cs GP" + String(o.csPin);
         line += "  " + String(o.length) + " LEDs, " + String((unsigned)o.place.size()) + " panels";
         bleSendLine(line);
     }

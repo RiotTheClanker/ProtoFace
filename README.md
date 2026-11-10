@@ -16,7 +16,7 @@ Animations are made with the companion tool,
 | Feature | Details |
 |---|---|
 | 🧩 **Any panel layout** | One firmware for every helmet: `display.json` on the SD card describes the panels and wiring |
-| 🌈 **LED outputs** | Up to 4 WS2812 chains, or HUB75 panels, on any free pins (MAX7219 planned) |
+| 🌈 **LED outputs** | Up to 4 WS2812 chains, HUB75 panels or a MAX7219 chain, on any free pins |
 | 💾 **SD card animations** | Plays `.anim` files from SD — `start.anim` auto-loads at boot |
 | 🎤 **Sound reactivity** | Three modes per LED: Static, Snap (threshold), Linear (volume-scaled), plus sound-triggered frames |
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |

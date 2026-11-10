@@ -1,7 +1,6 @@
 # Display config (`display.json`)
 
-> Status: in development on the `dev` branch. The firmware drives `ws2812` and `hub75`
-> outputs; `max7219` is checked but not driven yet.
+> Status: in development on the `dev` branch. The firmware drives all three output types.
 
 A display config describes a face: what the artist draws (**panels**) and how those
 pixels reach the hardware (**outputs**). The same file is used by the firmware and by the
@@ -199,6 +198,12 @@ Single-colour 8×8 modules on one SPI chain. Every panel on a MAX7219 output mus
 least `threshold` (0–255, default 64). `intensity` is the module brightness (0–15). `chain`
 lists panels starting with the module nearest the Pico.
 
+The firmware bit-bangs the chain, so any three free pins work. Inside a module, row 1 is
+the panel's top row and bit 7 of a row is its left column; if a module shows its image
+mirrored or turned, give that chain entry a `flip` or `rotate`. Power limiting doesn't
+apply to MAX7219 (the modules' current is set by `intensity`). `ident` shows each module's
+position on the chain and lights its first LED.
+
 ## Limits
 
 | Key | Default | Meaning |
@@ -237,8 +242,6 @@ playing files made for Mk2 and Mk3.
 
 ## Limits of the first firmware version
 
-- `max7219` outputs don't light up yet. A config with one is accepted but the firmware
-  reports "not supported by this firmware yet" and shows nothing.
 - HUB75: one RGB pin set (R1 G1 B1 R2 G2 B2) and the scan types listed above.
 - One output type at a time (all `ws2812`, or one `hub75`, or one `max7219`).
 - At most 4,096 pixels in total.
