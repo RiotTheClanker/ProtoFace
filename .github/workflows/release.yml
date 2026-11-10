@@ -1,17 +1,21 @@
 name: Release
 
-# Builds both models and publishes a GitHub release with one .uf2 per model.
-# Start it either by pushing a version tag (e.g. V6.1), or from the Actions
-# tab with "Run workflow" on master, entering the version — the tag is then
-# created on the current master commit.  The file names contain "Mk2" /
-# "Mk3", which is how the website's flasher sorts them by board.
+# Builds the single ProtoFace firmware and publishes a GitHub release with the
+# .uf2 and the display.json presets/examples.
+#
+# Start it by pushing a version tag (e.g. V7.0), or from the Actions tab with
+# "Run workflow", entering the version:
+#   - on master: a normal release; the version must equal FIRMWARE_VERSION.
+#   - on dev: a test prerelease (never marked "latest"); the version must
+#     start with FIRMWARE_VERSION and contain "-dev", e.g. V7.0-dev.1.
+# A version with a "-" in it (V7.0-dev.1, V7.0-rc1) is always a prerelease.
 on:
   push:
     tags: [ 'V*' ]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. V6.1) — must match FIRMWARE_VERSION'
+        description: 'Version (master: e.g. V7.0 = FIRMWARE_VERSION; dev: e.g. V7.0-dev.1)'
         required: true
 
 permissions:
@@ -22,17 +26,10 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.model }}
-    # Manual releases only from master
-    if: github.event_name == 'push' || github.ref == 'refs/heads/master'
+    name: Build firmware
+    # Manual releases only from master (release) or dev (prerelease)
+    if: github.event_name == 'push' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - layout: 11
-            model: Mk2
-          - layout: 14
-            model: Mk3
     steps:
       - uses: actions/checkout@v4
 
@@ -43,23 +40,30 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build ${{ matrix.model }} (PROTOGEN_LAYOUT=${{ matrix.layout }})
-        env:
-          PLATFORMIO_BUILD_FLAGS: -DPROTOGEN_LAYOUT=${{ matrix.layout }}
+      - name: Check the version against FIRMWARE_VERSION
+        run: |
+          fw=$(sed -n 's/^#define FIRMWARE_VERSION "\(.*\)"/\1/p' src/main.cpp)
+          echo "FIRMWARE_VERSION=$fw, release version=$VERSION"
+          if [ "$GITHUB_REF" = "refs/heads/dev" ]; then
+            case "$VERSION" in "$fw"*) ;; *) echo "::error::$VERSION must start with $fw"; exit 1;; esac
+            case "$VERSION" in *-dev*) ;; *) echo "::error::dev releases need -dev in the version"; exit 1;; esac
+          elif [ "$VERSION" != "$fw" ]; then
+            echo "::error::$VERSION must equal FIRMWARE_VERSION ($fw)"; exit 1
+          fi
+
+      - name: Build
         run: pio run
 
-      - name: Check the firmware version matches the tag
-        run: grep -q "#define FIRMWARE_VERSION \"${VERSION}\"" src/main.cpp
-
-      - name: Rename firmware
+      - name: Collect release files
         run: |
           mkdir -p dist
-          cp .pio/build/rpipico2w/firmware.uf2 "dist/ProtoFace-${{ matrix.model }}-${VERSION}.uf2"
+          cp .pio/build/rpipico2w/firmware.uf2 "dist/ProtoFace-${VERSION}.uf2"
+          cp displays/*.json displays/examples/*.json dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.model }}
-          path: dist/*.uf2
+          name: release
+          path: dist/*
           if-no-files-found: error
 
   publish:
@@ -72,9 +76,8 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          name: release
           path: dist
-          merge-multiple: true
 
       - name: Publish release
         env:
@@ -84,13 +87,19 @@ jobs:
           # tag and starts this workflow) already exists: add the files to it
           # instead of failing, and keep its title and notes.
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" dist/*.uf2 --clobber
+            gh release upload "$VERSION" dist/* --clobber
             exit 0
           fi
+          case "$VERSION" in
+            *-*) pre=true; set -- --prerelease --latest=false ;;
+            *)   pre=false; set -- ;;
+          esac
           notes="docs/releases/${VERSION}.md"
-          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+          if [ -f "$notes" ]; then set -- "$@" --notes-file "$notes"
+          elif $pre && [ -f docs/releases/dev.md ]; then set -- "$@" --notes-file docs/releases/dev.md
+          else set -- "$@" --generate-notes; fi
           # --target creates the tag on this commit when it doesn't exist yet
           # (manual runs); for a pushed tag it already points here.
-          gh release create "$VERSION" dist/*.uf2 \
-            --title "Protogen controller ${VERSION}" \
+          gh release create "$VERSION" dist/* \
+            --title "ProtoFace ${VERSION}" \
             --target "$GITHUB_SHA" "$@"
