@@ -3,6 +3,7 @@
 #include <SD.h>
 #include <LittleFS.h>
 #include <Adafruit_NeoPixel.h>
+#include <Adafruit_Protomatter.h>
 #include <BTstackLib.h>
 #include <BluetoothLock.h>
 #include <Wire.h>
@@ -98,6 +99,8 @@ pf::DisplayConfig display;
 bool              haveDisplay = false;     // a usable config is loaded
 String            displayProblem;          // why not, for 'status' / 'display'
 std::vector<Adafruit_NeoPixel *> strips;   // one per ws2812 output
+Adafruit_Protomatter *matrix = nullptr;    // the hub75 output, if any
+static const uint8_t HUB75_BIT_DEPTH = 6;  // colour bits per channel on HUB75
 
 // ── Playback state ────────────────────────────────────────────────────────────
 AnimFrame     currentFrame;
@@ -390,6 +393,36 @@ bool syncDisplayFromSD() {
 }
 
 // Load /display.json from flash and start its outputs.
+// Start the HUB75 driver (Adafruit Protomatter).  It refreshes the panels from
+// a timer interrupt; frames are drawn into its back buffer and swapped in.
+bool startMatrix(const pf::Output &o) {
+    // Protomatter drives panels that light two rows per address (one per RGB
+    // pin set), so the scan must be half the panel height and the address
+    // lines must count those rows: 64x32 1/16 scan = 4 lines (A-D).
+    if (o.scan * 2 != o.height || (1u << o.addrPins.size()) != o.scan) {
+        displayProblem = String(o.name.c_str()) + ": this firmware drives HUB75 panels whose scan is "
+                         "half their height, with one address line per halving (e.g. 64x32 1/16 scan, "
+                         "pins A-D)";
+        return false;
+    }
+    static uint8_t rgb[6], addr[5];
+    for (size_t i = 0; i < 6; i++) rgb[i] = o.rgbPins[i];
+    for (size_t i = 0; i < o.addrPins.size(); i++) addr[i] = o.addrPins[i];
+    matrix = new Adafruit_Protomatter(o.width * o.chain, HUB75_BIT_DEPTH, 1, rgb,
+                                      (uint8_t)o.addrPins.size(), addr,
+                                      o.clkPin, o.latPin, o.oePin, true);
+    ProtomatterStatus st = matrix->begin();
+    if (st != PROTOMATTER_OK) {
+        delete matrix;
+        matrix = nullptr;
+        displayProblem = String(o.name.c_str()) + ": HUB75 driver did not start (error " + String((int)st) + ")";
+        return false;
+    }
+    matrix->fillScreen(0);
+    matrix->show();
+    return true;
+}
+
 void initDisplay() {
     haveDisplay = false;
     String json = readFlashDisplay();
@@ -404,13 +437,15 @@ void initDisplay() {
         return;
     }
     for (const pf::Output &o : display.outputs) {
-        if (o.type != pf::OUT_WS2812) {
+        if (o.type == pf::OUT_MAX7219) {
             displayProblem = String(outputTypeName(o.type)) +
                              " outputs are not supported by this firmware yet";
             return;
         }
+        if (o.type == pf::OUT_HUB75 && !startMatrix(o)) return;
     }
     for (const pf::Output &o : display.outputs) {
+        if (o.type != pf::OUT_WS2812) continue;
         Adafruit_NeoPixel *s = new Adafruit_NeoPixel(o.length, o.pin, neoOrder(o.colorOrder) + NEO_KHZ800);
         s->begin();
         s->clear();
@@ -442,7 +477,41 @@ static const uint8_t DIGITS_3x5[10][5] = {
 };
 static const uint8_t IDENT_RGB[4][3] = {{0, 60, 0}, {0, 0, 60}, {50, 0, 50}, {0, 50, 50}};
 
+// HUB75: each panel gets a frame and its number in the order of "place",
+// drawn where the config puts it, plus a red dot on the panel's first pixel.
+// A dot in the wrong corner means the panel needs a flip or rotate.
+void pushMatrixIdent(const pf::Output &o) {
+    matrix->fillScreen(0);
+    const uint32_t fbw = (uint32_t)o.width * o.chain;
+    for (size_t k = 0; k < o.place.size(); k++) {
+        const pf::Placement &pl = o.place[k];
+        const pf::Panel &p = display.panels[pl.panel];
+        bool turned = pl.rotate == 90 || pl.rotate == 270;
+        int w = turned ? p.h : p.w, h = turned ? p.w : p.h;
+        uint16_t c = matrix->color565(0, 0, 120);
+        matrix->drawRect(pl.x, pl.y, w, h, c);
+        int scale = min(w / 4, h / 6);
+        if (scale >= 1) {
+            const uint8_t *d = DIGITS_3x5[k % 10];
+            int x0 = pl.x + (w - 3 * scale) / 2, y0 = pl.y + (h - 5 * scale) / 2;
+            for (int y = 0; y < 5; y++)
+                for (int x = 0; x < 3; x++)
+                    if (d[y] & (4 >> x))
+                        matrix->fillRect(x0 + x * scale, y0 + y * scale, scale, scale,
+                                         matrix->color565(0, 120, 0));
+        }
+        for (uint32_t i = 0; i < o.source.size(); i++)
+            if (o.source[i] == (int32_t)p.offset) {
+                matrix->fillRect(i % fbw, i / fbw, 2, 2, matrix->color565(150, 0, 0));
+                break;
+            }
+    }
+    matrix->show();
+}
+
 void pushIdent() {
+    for (const pf::Output &o : display.outputs)
+        if (o.type == pf::OUT_HUB75) pushMatrixIdent(o);
     for (size_t oi = 0; oi < strips.size(); oi++) {
         Adafruit_NeoPixel &strip = *strips[oi];
         const pf::Output &o = display.outputs[oi];
@@ -523,10 +592,27 @@ void pushFrame(const LEDEntry *leds, uint8_t vol) {
         }
         strip.show();
     }
+    if (matrix) {
+        for (const pf::Output &o : display.outputs) {
+            if (o.type != pf::OUT_HUB75) continue;
+            const uint32_t fbw = (uint32_t)o.width * o.chain;
+            for (uint32_t k = 0; k < o.source.size(); k++) {
+                int32_t i = o.source[k];
+                uint16_t c = 0;
+                if (i >= 0)
+                    c = matrix->color565((uint16_t)frameRGB[i * 3]     * scale / 255,
+                                         (uint16_t)frameRGB[i * 3 + 1] * scale / 255,
+                                         (uint16_t)frameRGB[i * 3 + 2] * scale / 255);
+                matrix->drawPixel(k % fbw, k / fbw, c);
+            }
+        }
+        matrix->show();
+    }
 }
 
 void blankOutputs() {
     for (Adafruit_NeoPixel *s : strips) { s->clear(); s->show(); }
+    if (matrix) { matrix->fillScreen(0); matrix->show(); }
 }
 
 // ── SD helpers ────────────────────────────────────────────────────────────────
@@ -700,6 +786,9 @@ void sendDisplayInfo() {
     for (const pf::Output &o : display.outputs) {
         String line = String("Output:  ") + o.name.c_str() + "  " + outputTypeName(o.type);
         if (o.type == pf::OUT_WS2812) line += " GP" + String(o.pin) + " " + o.colorOrder.c_str();
+        if (o.type == pf::OUT_HUB75)
+            line += " " + String(o.width) + "x" + String(o.height) + " x" + String(o.chain) +
+                    " 1/" + String(o.scan) + " scan";
         line += "  " + String(o.length) + " LEDs, " + String((unsigned)o.place.size()) + " panels";
         bleSendLine(line);
     }

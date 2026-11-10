@@ -23,5 +23,5 @@
       ]
     }
   ],
-  "limits": { "max_ma": 4000 }
+  "limits": { "ma_per_led_white": 2, "ma_per_led_idle": 0.05, "max_ma": 4000 }
 }

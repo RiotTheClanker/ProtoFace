@@ -16,7 +16,7 @@ Animations are made with the companion tool,
 | Feature | Details |
 |---|---|
 | 🧩 **Any panel layout** | One firmware for every helmet: `display.json` on the SD card describes the panels and wiring |
-| 🌈 **NeoPixel outputs** | Up to 4 WS2812 chains on any free pins (HUB75 and MAX7219 planned) |
+| 🌈 **LED outputs** | Up to 4 WS2812 chains, or HUB75 panels, on any free pins (MAX7219 planned) |
 | 💾 **SD card animations** | Plays `.anim` files from SD — `start.anim` auto-loads at boot |
 | 🎤 **Sound reactivity** | Three modes per LED: Static, Snap (threshold), Linear (volume-scaled), plus sound-triggered frames |
 | 📡 **Bluetooth LE control** | NUS UART profile — connect with any BLE serial app |
@@ -234,6 +234,7 @@ Managed automatically by PlatformIO via `platformio.ini`:
 | Library | Purpose |
 |---|---|
 | `adafruit/Adafruit NeoPixel` | LED strip driver |
+| `adafruit/Adafruit Protomatter` + `Adafruit GFX Library` | HUB75 panel driver |
 | `bblanchon/ArduinoJson` | Reads `display.json` |
 | `LittleFS` | Flash copy of `display.json` (built into earlephilhower/arduino-pico) |
 | `Adafruit_HUSB238` + `adafruit/Adafruit BusIO` | USB-C PD negotiation (HUSB238) |

@@ -1,7 +1,7 @@
 # Display config (`display.json`)
 
-> Status: in development on the `dev` branch. The firmware drives `ws2812` outputs from it;
-> `hub75` and `max7219` are checked but not driven yet.
+> Status: in development on the `dev` branch. The firmware drives `ws2812` and `hub75`
+> outputs; `max7219` is checked but not driven yet.
 
 A display config describes a face: what the artist draws (**panels**) and how those
 pixels reach the hardware (**outputs**). The same file is used by the firmware and by the
@@ -175,6 +175,18 @@ Mk2 and Mk3 use `rows` from `top-left`, which matches the 8×8 panels used so fa
 
 Framebuffer pixels no panel covers stay black.
 
+The firmware drives HUB75 with Adafruit Protomatter at 6 bits per colour. It supports
+panels whose scan is half their height, with one address pin per halving: 64×32 1/16 scan
+uses 4 address pins (A–D), 64×64 1/32 scan uses 5 (A–E), 32×16 1/8 scan uses 3. Other
+scan types (such as 1/8 scan on a 32-row outdoor panel) are refused at boot.
+
+A HUB75 pixel draws far less than a NeoPixel, so set `limits` for it, for example
+`"ma_per_led_white": 2, "ma_per_led_idle": 0.05`. Otherwise the power limiter assumes
+15 mA per pixel and dims the panels heavily.
+
+`ident` on a HUB75 output draws a frame and the panel's number (its position in `place`)
+on each panel, with a red dot on the panel's first pixel.
+
 ### `max7219`
 
 ```json
@@ -225,8 +237,9 @@ playing files made for Mk2 and Mk3.
 
 ## Limits of the first firmware version
 
-- Only `ws2812` outputs light up. A config with `hub75` or `max7219` outputs is accepted
-  but the firmware reports "not supported by this firmware yet" and shows nothing.
+- `max7219` outputs don't light up yet. A config with one is accepted but the firmware
+  reports "not supported by this firmware yet" and shows nothing.
+- HUB75: one RGB pin set (R1 G1 B1 R2 G2 B2) and the scan types listed above.
 - One output type at a time (all `ws2812`, or one `hub75`, or one `max7219`).
 - At most 4,096 pixels in total.
 - At most 4 `ws2812` outputs.
