@@ -1,0 +1,27 @@
+{
+  "protoface_display": 1,
+  "name": "HUB75 2x 64x32",
+  "description": "Example: two 64x32 HUB75 panels chained, one per side of the visor. Each panel is drawn as one plain surface with no eye/mouth/nose regions. Check the pins and scan rate against your panels before using it.",
+  "outlines": false,
+  "panels": [
+    { "id": "Left",  "w": 64, "h": 32, "x": 0,  "y": 0, "side": "left" },
+    { "id": "Right", "w": 64, "h": 32, "x": 68, "y": 0, "side": "right" }
+  ],
+  "mirror": { "from": "left", "to": "right", "match": "order", "flip": "h" },
+  "outputs": [
+    {
+      "type": "hub75",
+      "name": "visor",
+      "width": 64,
+      "height": 32,
+      "chain": 2,
+      "scan": 16,
+      "pins": { "rgb": [6, 7, 8, 9, 10, 11], "addr": [12, 13, 14, 15], "clk": 20, "lat": 21, "oe": 22 },
+      "place": [
+        { "panel": "Left",  "x": 0,  "y": 0 },
+        { "panel": "Right", "x": 64, "y": 0 }
+      ]
+    }
+  ],
+  "limits": { "ma_per_led_white": 2, "ma_per_led_idle": 0.05, "max_ma": 4000 }
+}

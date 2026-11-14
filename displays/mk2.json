@@ -1,0 +1,49 @@
+{
+  "protoface_display": 1,
+  "name": "Mk2",
+  "description": "Mk2 helmet: 6 panels on the left chain (GP2, with nose), 5 on the right (GP3). Panel order checked on a helmet 2026-10-14.",
+  "panels": [
+    { "id": "L_eye1", "w": 8, "h": 8, "x": 0, "y": 0, "side": "left", "region": "eye" },
+    { "id": "L_eye2", "w": 8, "h": 8, "x": 8, "y": 0, "side": "left", "region": "eye" },
+    { "id": "L_mouth1", "w": 8, "h": 8, "x": 1, "y": 8, "side": "left", "region": "mouth" },
+    { "id": "L_mouth2", "w": 8, "h": 8, "x": 9, "y": 8, "side": "left", "region": "mouth" },
+    { "id": "L_mouth3", "w": 8, "h": 8, "x": 17, "y": 8, "side": "left", "region": "mouth" },
+    { "id": "L_nose", "w": 8, "h": 8, "x": 25, "y": 0, "side": "left", "region": "nose" },
+    { "id": "R_eye1", "w": 8, "h": 8, "x": 0, "y": 18, "side": "right", "region": "eye" },
+    { "id": "R_eye2", "w": 8, "h": 8, "x": 8, "y": 18, "side": "right", "region": "eye" },
+    { "id": "R_mouth1", "w": 8, "h": 8, "x": 1, "y": 26, "side": "right", "region": "mouth" },
+    { "id": "R_mouth2", "w": 8, "h": 8, "x": 9, "y": 26, "side": "right", "region": "mouth" },
+    { "id": "R_mouth3", "w": 8, "h": 8, "x": 17, "y": 26, "side": "right", "region": "mouth" }
+  ],
+  "mirror": {
+    "from": "left",
+    "to": "right",
+    "match": "region",
+    "flip": "h"
+  },
+  "outputs": [
+    {
+      "type": "ws2812",
+      "name": "left",
+      "pin": 2,
+      "color_order": "GRB",
+      "wiring": "rows",
+      "start": "top-left",
+      "chain": [ "L_eye1", "L_eye2", "L_mouth1", "L_mouth2", "L_mouth3", "L_nose" ]
+    },
+    {
+      "type": "ws2812",
+      "name": "right",
+      "pin": 3,
+      "color_order": "GRB",
+      "wiring": "rows",
+      "start": "top-left",
+      "chain": [ "R_mouth1", "R_mouth2", "R_mouth3", "R_eye1", "R_eye2" ]
+    }
+  ],
+  "limits": {
+    "ma_per_led_white": 15,
+    "ma_per_led_idle": 1,
+    "min_brightness": 40
+  }
+}
