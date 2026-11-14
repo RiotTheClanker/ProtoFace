@@ -18,7 +18,7 @@ extern "C" {
 #include "ble/att_server.h"
 }
 
-#define FIRMWARE_VERSION "V7.0-dev"
+#define FIRMWARE_VERSION "V7.0"
 
 // ── Display ───────────────────────────────────────────────────────────────────
 //

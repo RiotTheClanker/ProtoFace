@@ -125,22 +125,25 @@ pio run --target upload
 pio device monitor
 ```
 
-**Prebuilt firmware:** released versions (Mk2/Mk3 builds) are under
+**Prebuilt firmware:** released versions are under
 [Releases](https://github.com/RiotTheClanker/ProtoFace/releases) and on the website's flasher.
 Every push and PR is built by the **Firmware build** workflow (`ProtoFace` under the run's
 **Artifacts**); this development firmware is one file for every helmet.
 
 ### Releasing
 
-1. Set `FIRMWARE_VERSION` in `src/main.cpp` to the new version (e.g. `"V6.2"`).
+1. Set `FIRMWARE_VERSION` in `src/main.cpp` to the new version (e.g. `"V7.1"`).
 2. Add release notes as `docs/releases/<version>.md`.
 3. Merge to `master`, then either push a tag with the same name
-   (`git tag V6.2 && git push origin V6.2`), or open **Actions → Release → Run workflow**
+   (`git tag V7.1 && git push origin V7.1`), or open **Actions → Release → Run workflow**
    on `master` and enter the version. The tag is then created on the current `master` commit.
 
-The **Release** workflow builds both models and publishes the release with
-`ProtoFace-Mk2-<version>.uf2` and `ProtoFace-Mk3-<version>.uf2`. The names must keep
-"Mk2"/"Mk3" in them, because that's how the website's flasher sorts files by board.
+The **Release** workflow builds the firmware and publishes the release with
+`ProtoFace-<version>.uf2` plus the `display.json` presets and examples. If the release was
+made by hand on the Releases page first, it keeps its title and notes and just gets the files.
+The website's flasher lists any release that has a `ProtoFace-<version>.uf2`, so keep that name.
+Versions with a `-` in them (e.g. `V7.1-dev.1`, run from `dev`) become draft prereleases
+that only repo members can see.
 
 **Manual flash:** Hold **BOOTSEL** while plugging in USB → Pico mounts as a drive.  
 Copy `.pio/build/rpipico2w/firmware.uf2` onto it.

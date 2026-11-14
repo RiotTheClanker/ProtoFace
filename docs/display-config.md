@@ -1,6 +1,6 @@
 # Display config (`display.json`)
 
-> Status: in development on the `dev` branch. The firmware drives all three output types.
+> Supported from ProtoFace V7.0. The firmware drives all three output types.
 
 A display config describes a face: what the artist draws (**panels**) and how those
 pixels reach the hardware (**outputs**). The same file is used by the firmware and by the
